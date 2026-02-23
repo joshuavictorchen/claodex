@@ -232,7 +232,7 @@ def test_parse_collab_request_defaults():
 
 def test_parse_collab_request_with_options():
     parsed = parse_collab_request(
-        '/collab --turns 4 --start codex "implement auth"',
+        "/collab --turns 4 --start codex implement auth",
         default_start="claude",
     )
     assert parsed.turns == 4
@@ -250,9 +250,21 @@ def test_parse_collab_request_requires_message():
         parse_collab_request("/collab --turns 3", default_start="claude")
 
 
-def test_parse_collab_request_unmatched_quote():
-    with pytest.raises(ClaodexError, match="validation error"):
-        parse_collab_request('/collab --turns 3 "unterminated', default_start="claude")
+def test_parse_collab_request_extra_whitespace():
+    parsed = parse_collab_request(
+        "/collab  --turns    4  --start  codex   hello world", default_start="claude"
+    )
+    assert parsed.turns == 4
+    assert parsed.start_agent == "codex"
+    assert parsed.message == "hello world"
+
+
+def test_parse_collab_request_apostrophes_in_message():
+    parsed = parse_collab_request(
+        "/collab --turns 3 I'm testing it's features", default_start="claude"
+    )
+    assert parsed.turns == 3
+    assert parsed.message == "I'm testing it's features"
 
 
 def test_parse_collab_request_rejects_unknown_option():

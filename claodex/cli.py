@@ -788,12 +788,9 @@ def parse_collab_request(command_text: str, default_start: str) -> CollabRequest
     Returns:
         Parsed collaboration request.
     """
-    import shlex
-
-    try:
-        pieces = shlex.split(command_text)
-    except ValueError as exc:
-        raise ClaodexError(f"validation error: {exc}") from exc
+    # split on whitespace — no shell quoting rules, so apostrophes
+    # and other punctuation in the message body work naturally
+    pieces = command_text.split()
     if not pieces or pieces[0] != "/collab":
         raise ClaodexError("validation error: malformed collab command")
 
@@ -834,7 +831,10 @@ def parse_collab_request(command_text: str, default_start: str) -> CollabRequest
             raise ClaodexError(f"validation error: unknown option '{token}'")
         break
 
-    message = " ".join(pieces[index:]).strip()
+    # extract the message as the raw remainder after consuming option tokens,
+    # using maxsplit to preserve original spacing and punctuation
+    parts = command_text.split(maxsplit=index)
+    message = parts[index].strip() if len(parts) > index else ""
     if not message:
         raise ClaodexError("validation error: /collab requires a message")
 
