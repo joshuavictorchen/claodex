@@ -237,6 +237,44 @@ def pane_current_command(pane_id: str, session_name: str = SESSION_NAME) -> str 
     return None
 
 
+def _submit_delay(content: str) -> float:
+    """Compute adaptive delay between paste and submit.
+
+    The agent TUI renderer needs time to process literal keystrokes before
+    it will accept C-m as submit.  For small payloads 0.3s is sufficient,
+    but large payloads need proportionally more time — especially on Codex's
+    TUI, which is slower to settle than Claude Code's ink/react renderer.
+
+    Override with CLAODEX_PASTE_SUBMIT_DELAY_SECONDS to force a fixed value.
+
+    Args:
+        content: Payload that was just pasted.
+
+    Returns:
+        Delay in seconds.
+    """
+    import os
+
+    override = os.environ.get("CLAODEX_PASTE_SUBMIT_DELAY_SECONDS")
+    if override is not None:
+        try:
+            value = float(override)
+        except (ValueError, OverflowError):
+            value = float("nan")
+        if not (0 <= value <= 10):
+            raise ClaodexError(
+                f"invalid CLAODEX_PASTE_SUBMIT_DELAY_SECONDS: {override!r} "
+                f"(must be a number between 0 and 10)"
+            )
+        return value
+
+    # base 0.3s covers payloads up to ~2000 chars comfortably;
+    # add 0.1s per additional 1000 chars, capped at 2s
+    base = 0.3
+    extra = max(0, len(content) - 2000) / 1000 * 0.1
+    return min(base + extra, 2.0)
+
+
 def paste_content(pane_id: str, content: str) -> None:
     """Send content into a pane as literal keystrokes and submit.
 
@@ -250,11 +288,7 @@ def paste_content(pane_id: str, content: str) -> None:
     # `--` prevents payloads that start with `-` (e.g. `--- user ---`)
     # from being parsed as tmux flags
     _run_tmux(["send-keys", "-t", pane_id, "-l", "--", content])
-    # claude code's ink/react renderer needs ~250ms to process a batch of
-    # literal keystrokes before it will accept C-m as submit; at 150ms the
-    # C-m arrives mid-render and is swallowed as a multi-line newline.
-    # codex works at 150ms but 300ms is safe for both with comfortable margin.
-    time.sleep(0.3)
+    time.sleep(_submit_delay(content))
     _run_tmux(["send-keys", "-t", pane_id, "C-m"])
 
 

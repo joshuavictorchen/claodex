@@ -39,7 +39,8 @@ class InputEditor:
         buffer: list[str] = []
         cursor = 0
         history_index: int | None = None
-        previous_display_lines = 1
+        # (total visual rows, cursor's visual row from top of render)
+        previous_render = (1, 0)
 
         self._write(prompt)
 
@@ -55,7 +56,7 @@ class InputEditor:
                     continue
 
                 if key == "\t":
-                    self._clear_render(prompt, buffer, previous_display_lines)
+                    self._clear_render(previous_render)
                     return InputEvent(kind="toggle")
 
                 if key == "\x03":
@@ -69,7 +70,7 @@ class InputEditor:
                 if key == "\x0a":
                     buffer.insert(cursor, "\n")
                     cursor += 1
-                    previous_display_lines = self._render(prompt, buffer, cursor, previous_display_lines)
+                    previous_render = self._render(prompt, buffer, cursor, previous_render)
                     continue
 
                 # carriage return submits (Enter sends \r in raw mode)
@@ -84,7 +85,7 @@ class InputEditor:
                     if cursor > 0:
                         del buffer[cursor - 1]
                         cursor -= 1
-                    previous_display_lines = self._render(prompt, buffer, cursor, previous_display_lines)
+                    previous_render = self._render(prompt, buffer, cursor, previous_render)
                     continue
 
                 if key == "\x1b":
@@ -117,14 +118,14 @@ class InputEditor:
                         cursor = 0
                     elif sequence in {"[F", "OF", "[4~"}:  # end
                         cursor = len(buffer)
-                    previous_display_lines = self._render(prompt, buffer, cursor, previous_display_lines)
+                    previous_render = self._render(prompt, buffer, cursor, previous_render)
                     continue
 
                 # printable characters
                 if key and key >= " ":
                     buffer.insert(cursor, key)
                     cursor += 1
-                    previous_display_lines = self._render(prompt, buffer, cursor, previous_display_lines)
+                    previous_render = self._render(prompt, buffer, cursor, previous_render)
 
     def _read_escape_sequence(self) -> str:
         """Read a simple ANSI escape sequence body."""
@@ -150,19 +151,39 @@ class InputEditor:
         prompt: str,
         buffer: list[str],
         cursor: int,
-        previous_display_lines: int,
-    ) -> int:
-        """Redraw prompt + buffer and reposition the cursor."""
+        previous_render: tuple[int, int],
+    ) -> tuple[int, int]:
+        """Redraw prompt + buffer and reposition the cursor.
+
+        Args:
+            prompt: Prompt string.
+            buffer: Current input buffer characters.
+            cursor: Cursor position in buffer.
+            previous_render: (total visual rows, cursor visual row) from last render.
+
+        Returns:
+            (total visual rows, cursor visual row) for this render.
+        """
+        prev_total, prev_cursor_row = previous_render
         text = "".join(buffer)
         lines = text.split("\n")
         if not lines:
             lines = [""]
-        display_lines = len(lines)
 
-        # move to first line of previous render and clear it
-        self._move_to_render_start(previous_display_lines)
-        self._clear_n_lines(previous_display_lines)
-        self._move_to_render_start(previous_display_lines)
+        columns = os.get_terminal_size().columns
+
+        # count visual rows per logical line, accounting for terminal wrapping
+        visual_per_line: list[int] = []
+        for i, line in enumerate(lines):
+            prefix_len = len(prompt) if i == 0 else 4  # "... " continuation
+            char_count = prefix_len + len(line)
+            visual_per_line.append(max(1, -(-char_count // columns)))
+        visual_lines = sum(visual_per_line)
+
+        # move from cursor's current visual row to render start, clear, reset
+        self._move_up(prev_cursor_row)
+        self._clear_n_lines(prev_total)
+        self._move_up(prev_total - 1)
 
         for line_index, line in enumerate(lines):
             if line_index == 0:
@@ -170,33 +191,45 @@ class InputEditor:
             else:
                 self._write(f"\n... {line}")
 
+        # position cursor accounting for wrapping
         cursor_line = text[:cursor].count("\n")
-        cursor_line_offset = (display_lines - 1) - cursor_line
+        cursor_col_in_line = len(text[:cursor].split("\n")[-1])
+        prefix_len = len(prompt) if cursor_line == 0 else 4
+        absolute_col = prefix_len + cursor_col_in_line
 
-        if cursor_line_offset > 0:
-            self._write(f"\x1b[{cursor_line_offset}A")
+        # visual row and column of the cursor within the full render;
+        # at exact wrap boundaries (absolute_col % columns == 0) the terminal
+        # places the cursor at column 0 of the next row, but our visual_per_line
+        # doesn't count that phantom row — keep cursor on the last content row
+        cursor_visual_row = sum(visual_per_line[:cursor_line])
+        if absolute_col > 0 and absolute_col % columns == 0:
+            cursor_visual_row += absolute_col // columns - 1
+            cursor_column = columns
+        else:
+            cursor_visual_row += absolute_col // columns
+            cursor_column = absolute_col % columns
+
+        # move up from the last visual row to the cursor's visual row
+        rows_up = (visual_lines - 1) - cursor_visual_row
+        if rows_up > 0:
+            self._write(f"\x1b[{rows_up}A")
         self._write("\r")
+        if cursor_column > 0:
+            self._write(f"\x1b[{cursor_column}C")
+        return visual_lines, cursor_visual_row
 
-        column = len(prompt) + len(text[:cursor].split("\n")[-1])
-        if cursor_line > 0:
-            column = 4 + len(text[:cursor].split("\n")[-1])
-        if column > 0:
-            self._write(f"\x1b[{column}C")
-        return display_lines
-
-    def _clear_render(self, prompt: str, buffer: list[str], previous_display_lines: int) -> None:
+    def _clear_render(self, previous_render: tuple[int, int]) -> None:
         """Clear the current input render from the terminal."""
-        _ = prompt
-        _ = buffer
-        self._move_to_render_start(previous_display_lines)
-        self._clear_n_lines(previous_display_lines)
-        self._move_to_render_start(previous_display_lines)
+        prev_total, prev_cursor_row = previous_render
+        self._move_up(prev_cursor_row)
+        self._clear_n_lines(prev_total)
+        self._move_up(prev_total - 1)
 
-    def _move_to_render_start(self, lines: int) -> None:
-        """Move cursor to the first line of the current render."""
+    def _move_up(self, rows: int) -> None:
+        """Move cursor to column 0, then up by the given number of rows."""
         self._write("\r")
-        if lines > 1:
-            self._write(f"\x1b[{lines - 1}A")
+        if rows > 0:
+            self._write(f"\x1b[{rows}A")
 
     def _clear_n_lines(self, count: int) -> None:
         """Clear a fixed number of terminal lines from current position."""

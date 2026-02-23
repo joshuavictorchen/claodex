@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
+from claodex.errors import ClaodexError
 from claodex.skill.scripts import register
-from claodex.tmux_ops import PaneLayout, paste_content, prefill_skill_commands
+from claodex.tmux_ops import PaneLayout, _submit_delay, paste_content, prefill_skill_commands
 
 
 def test_paste_content_uses_literal_mode_with_double_dash(monkeypatch):
@@ -68,3 +71,30 @@ def test_detect_tmux_pane_falls_back_to_tmux_display_message(monkeypatch):
 
     monkeypatch.setattr(register.subprocess, "run", fake_run)
     assert register.detect_tmux_pane() == "%7"
+
+
+def test_submit_delay_defaults_for_small_payload(monkeypatch):
+    monkeypatch.delenv("CLAODEX_PASTE_SUBMIT_DELAY_SECONDS", raising=False)
+    assert _submit_delay("x" * 2000) == pytest.approx(0.3)
+
+
+def test_submit_delay_scales_for_large_payload(monkeypatch):
+    monkeypatch.delenv("CLAODEX_PASTE_SUBMIT_DELAY_SECONDS", raising=False)
+    assert _submit_delay("x" * 5000) == pytest.approx(0.6)
+
+
+def test_submit_delay_caps_at_two_seconds(monkeypatch):
+    monkeypatch.delenv("CLAODEX_PASTE_SUBMIT_DELAY_SECONDS", raising=False)
+    assert _submit_delay("x" * 50000) == pytest.approx(2.0)
+
+
+def test_submit_delay_honors_valid_override(monkeypatch):
+    monkeypatch.setenv("CLAODEX_PASTE_SUBMIT_DELAY_SECONDS", "0.75")
+    assert _submit_delay("x") == pytest.approx(0.75)
+
+
+@pytest.mark.parametrize("value", ["abc", "-1", "nan", "inf", "11"])
+def test_submit_delay_rejects_invalid_override(monkeypatch, value):
+    monkeypatch.setenv("CLAODEX_PASTE_SUBMIT_DELAY_SECONDS", value)
+    with pytest.raises(ClaodexError, match="invalid CLAODEX_PASTE_SUBMIT_DELAY_SECONDS"):
+        _submit_delay("x")

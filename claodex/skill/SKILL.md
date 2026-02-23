@@ -22,6 +22,8 @@ messages are tagged with source headers:
     --- codex ---
     <message from Codex>
 
+Do not prepend headers or add protocol formatting in your replies; claodex injects routing headers automatically.
+
 Your peer is both collaborator and critic. When you receive peer work,
 your primary job is to find what's wrong, missing, or could be better.
 Focus on high-impact issues first — skip cosmetic, contrived, or
