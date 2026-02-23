@@ -9,21 +9,32 @@ from claodex.skill.scripts import register
 from claodex.tmux_ops import PaneLayout, _submit_delay, paste_content, prefill_skill_commands
 
 
-def test_paste_content_uses_set_buffer_and_paste_buffer(monkeypatch):
-    calls: list[list[str]] = []
+def test_paste_content_uses_load_buffer_and_paste_buffer(monkeypatch):
+    tmux_calls: list[list[str]] = []
+    subprocess_calls: list[dict] = []
 
     def fake_run_tmux(args: list[str], **kwargs):
         _ = kwargs
-        calls.append(args)
+        tmux_calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    def fake_subprocess_run(args, **kwargs):
+        subprocess_calls.append({"args": args, "input": kwargs.get("input")})
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("claodex.tmux_ops._run_tmux", fake_run_tmux)
+    monkeypatch.setattr("claodex.tmux_ops.subprocess.run", fake_subprocess_run)
     monkeypatch.setattr("claodex.tmux_ops.time.sleep", lambda _seconds: None)
 
     paste_content("%1", "--- user ---\nhello")
 
-    assert calls == [
-        ["set-buffer", "--", "--- user ---\nhello"],
+    # load-buffer via subprocess.run with stdin input
+    assert len(subprocess_calls) == 1
+    assert subprocess_calls[0]["args"] == ["tmux", "load-buffer", "-"]
+    assert subprocess_calls[0]["input"] == "--- user ---\nhello"
+
+    # paste-buffer + send-keys via _run_tmux
+    assert tmux_calls == [
         ["paste-buffer", "-p", "-t", "%1"],
         ["send-keys", "-t", "%1", "C-m"],
     ]

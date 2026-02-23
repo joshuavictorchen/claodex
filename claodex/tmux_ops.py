@@ -276,22 +276,32 @@ def _submit_delay(content: str) -> float:
 def paste_content(pane_id: str, content: str) -> None:
     """Paste content into a pane and submit.
 
-    Uses tmux set-buffer + paste-buffer -p for atomic delivery.  The -p flag
-    is critical: without it tmux wraps content in bracketed-paste escapes
-    (ESC[200~ / ESC[201~) which Codex's TUI intercepts and renders as
-    "[Pasted Content N chars]" summaries instead of inserting the text.
+    Uses tmux load-buffer (stdin) + paste-buffer -p for atomic delivery.
+    The -p flag is critical: without it tmux wraps content in
+    bracketed-paste escapes (ESC[200~ / ESC[201~) which Codex's TUI
+    intercepts and renders as "[Pasted Content N chars]" summaries instead
+    of inserting the text.
 
-    An earlier approach used send-keys -l (character-by-character), which
-    worked for small payloads but overwhelmed Codex's TUI on large messages —
-    the cursor/view lagged behind and the subsequent C-m was lost.
+    An earlier approach used set-buffer with the content as a CLI argument,
+    which hit tmux's ~16 KB command-length limit when peer deltas were
+    large ("command too long").  load-buffer from stdin has no such limit.
 
     Args:
         pane_id: Target pane id.
         content: Message to inject.
     """
-    # `--` prevents payloads that start with `-` (e.g. `--- user ---`)
-    # from being parsed as tmux flags
-    _run_tmux(["set-buffer", "--", content])
+    # load-buffer from stdin avoids the ~16 KB CLI argument limit that
+    # set-buffer hits on large peer deltas
+    result = subprocess.run(
+        ["tmux", "load-buffer", "-"],
+        input=content,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        raise ClaodexError(stderr or "tmux load-buffer failed")
     # -p skips bracketed-paste escapes that TUIs intercept and mangle
     _run_tmux(["paste-buffer", "-p", "-t", pane_id])
     time.sleep(_submit_delay(content))
