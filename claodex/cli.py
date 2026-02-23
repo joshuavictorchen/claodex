@@ -448,6 +448,9 @@ class ClaodexApplication:
         if not source.exists():
             raise ClaodexError(f"skill source missing: {source}")
 
+        # files that must exist after a successful copy
+        required_files = ("SKILL.md", "scripts/register.py")
+
         claude_root = Path(
             os.getenv("CLAODEX_CLAUDE_SKILLS_DIR", str(Path.home() / ".claude" / "skills"))
         )
@@ -455,12 +458,28 @@ class ClaodexApplication:
             os.getenv("CLAODEX_CODEX_SKILLS_DIR", str(Path.home() / ".codex" / "skills"))
         )
 
+        print("installing skill assets...")
         for root in (claude_root, codex_root):
             target = root / "claodex"
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists():
+                print(f"  removing stale {target}")
                 shutil.rmtree(target)
-            shutil.copytree(source, target)
+            # skip __init__.py and __pycache__ — they exist for setuptools
+            # package discovery but are not needed in the installed skill
+            shutil.copytree(
+                source,
+                target,
+                ignore=shutil.ignore_patterns("__init__.py", "__pycache__"),
+            )
+
+            # verify every required file landed
+            missing = [f for f in required_files if not (target / f).exists()]
+            if missing:
+                raise ClaodexError(
+                    f"skill install to {target} incomplete, missing: {', '.join(missing)}"
+                )
+            print(f"  installed {target}")
 
     def _run_repl(self, workspace_root: Path, participants: SessionParticipants) -> None:
         """Run the interactive command loop.
