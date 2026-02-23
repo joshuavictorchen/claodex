@@ -59,6 +59,10 @@ state your assumption. For ambiguities that affect interfaces,
 observable behavior, or irreversible decisions, ask one targeted
 clarification question rather than guessing.
 
+## change pointers
+
+When you edit files, end your message with a change pointers list: file path, line range, and intent. One line per file.
+
 ## trigger phrases
 
 - `/claodex`

@@ -9,7 +9,7 @@ from claodex.skill.scripts import register
 from claodex.tmux_ops import PaneLayout, _submit_delay, paste_content, prefill_skill_commands
 
 
-def test_paste_content_uses_literal_mode_with_double_dash(monkeypatch):
+def test_paste_content_uses_set_buffer_and_paste_buffer(monkeypatch):
     calls: list[list[str]] = []
 
     def fake_run_tmux(args: list[str], **kwargs):
@@ -23,7 +23,8 @@ def test_paste_content_uses_literal_mode_with_double_dash(monkeypatch):
     paste_content("%1", "--- user ---\nhello")
 
     assert calls == [
-        ["send-keys", "-t", "%1", "-l", "--", "--- user ---\nhello"],
+        ["set-buffer", "--", "--- user ---\nhello"],
+        ["paste-buffer", "-p", "-t", "%1"],
         ["send-keys", "-t", "%1", "C-m"],
     ]
 

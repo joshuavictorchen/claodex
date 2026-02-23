@@ -240,10 +240,8 @@ def pane_current_command(pane_id: str, session_name: str = SESSION_NAME) -> str 
 def _submit_delay(content: str) -> float:
     """Compute adaptive delay between paste and submit.
 
-    The agent TUI renderer needs time to process literal keystrokes before
-    it will accept C-m as submit.  For small payloads 0.3s is sufficient,
-    but large payloads need proportionally more time — especially on Codex's
-    TUI, which is slower to settle than Claude Code's ink/react renderer.
+    Even with atomic tmux paste-buffer delivery, target TUIs may need brief
+    settle time before accepting C-m as submit.
 
     Override with CLAODEX_PASTE_SUBMIT_DELAY_SECONDS to force a fixed value.
 
@@ -276,10 +274,16 @@ def _submit_delay(content: str) -> float:
 
 
 def paste_content(pane_id: str, content: str) -> None:
-    """Send content into a pane as literal keystrokes and submit.
+    """Paste content into a pane and submit.
 
-    Uses send-keys -l (literal mode) instead of load-buffer/paste-buffer,
-    because paste-buffer doesn't work reliably with Claude and Codex TUIs.
+    Uses tmux set-buffer + paste-buffer -p for atomic delivery.  The -p flag
+    is critical: without it tmux wraps content in bracketed-paste escapes
+    (ESC[200~ / ESC[201~) which Codex's TUI intercepts and renders as
+    "[Pasted Content N chars]" summaries instead of inserting the text.
+
+    An earlier approach used send-keys -l (character-by-character), which
+    worked for small payloads but overwhelmed Codex's TUI on large messages —
+    the cursor/view lagged behind and the subsequent C-m was lost.
 
     Args:
         pane_id: Target pane id.
@@ -287,7 +291,9 @@ def paste_content(pane_id: str, content: str) -> None:
     """
     # `--` prevents payloads that start with `-` (e.g. `--- user ---`)
     # from being parsed as tmux flags
-    _run_tmux(["send-keys", "-t", pane_id, "-l", "--", content])
+    _run_tmux(["set-buffer", "--", content])
+    # -p skips bracketed-paste escapes that TUIs intercept and mangle
+    _run_tmux(["paste-buffer", "-p", "-t", pane_id])
     time.sleep(_submit_delay(content))
     _run_tmux(["send-keys", "-t", pane_id, "C-m"])
 

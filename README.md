@@ -29,19 +29,10 @@ When you're done:
 /quit          # kills agents, tmux session, and exits
 ```
 
-### Detach and reattach
+### Resume after exit or WSL restart
 
-If you detach from tmux (`Ctrl+b` then `d`) or your terminal disconnects,
-the agents keep running. Reattach with:
-
-```bash
-claodex attach
-```
-
-### Resume after `/quit` or WSL restart
-
-`/quit` tears everything down. To start a fresh session that picks up each
-agent's conversation history:
+Graceful exits (`/quit`, `Ctrl+D`) kill the agents and tmux session. To start
+a fresh session that picks up each agent's conversation history:
 
 ```bash
 claodex                    # start a new session
@@ -85,8 +76,9 @@ one window. claodex uses it to run Claude, Codex, and your CLI side by side.
   where you type. Claude and Codex panes show their native output — you can
   glance at them or scroll up to see what they're doing, but claodex handles
   all message routing.
-- **If your terminal disconnects**, the session keeps running. Reattach with
-  `tmux attach -t claodex`.
+- **If your terminal disconnects** (SSH drop, window close), the tmux session
+  keeps running. Reattach with `tmux attach -t claodex`. Note: this is
+  different from `/quit` or `Ctrl+D`, which kill the session entirely.
 - **If an agent pane crashes**, claodex will detect it and report a dead-pane
   error when you next send a message.
 
@@ -95,7 +87,7 @@ one window. claodex uses it to run Claude, Codex, and your CLI side by side.
 The claodex prompt shows your current target:
 
 ```
-codex ❯ _
+claude ❯ _
 ```
 
 | Key | Action |
