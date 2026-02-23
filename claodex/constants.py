@@ -26,3 +26,7 @@ DEFAULT_TURN_TIMEOUT_SECONDS = 300
 
 STUCK_SKIP_ATTEMPTS = 3
 STUCK_SKIP_SECONDS = 10.0
+
+# seconds of no JSONL growth before declaring a claude turn complete via
+# quiescence fallback (used when turn_duration marker is absent)
+DEFAULT_CLAUDE_QUIESCENCE_SECONDS = 3.0

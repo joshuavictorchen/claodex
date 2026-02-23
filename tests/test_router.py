@@ -639,3 +639,74 @@ def test_wait_for_response_claude_simple_turn_duration(tmp_path):
     response = router.wait_for_response(pending=pending, timeout_seconds=0.5)
     assert response.agent == "claude"
     assert response.text == "simple answer"
+
+
+def test_wait_for_response_claude_quiescence_fallback(tmp_path):
+    """Claude turn without turn_duration is detected via quiescence."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    # no turn_duration entry — just user + assistant
+    _write_jsonl(claude_session, _claude_entries("hello", "hey there"))
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(
+            poll_seconds=0.01,
+            turn_timeout_seconds=5,
+            claude_quiescence_seconds=0.1,
+        ),
+    )
+
+    pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello")
+    response = router.wait_for_response(pending=pending, timeout_seconds=2.0)
+    assert response.agent == "claude"
+    assert response.text == "hey there"
+
+
+def test_wait_for_response_claude_quiescence_blocked_by_tool_use(tmp_path):
+    """Quiescence must not fire when the last assistant entry has tool_use."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    # incomplete tool turn: assistant has tool_use but no tool_result/turn_duration
+    _write_jsonl(claude_session, _claude_tool_entries(tool_complete=False))
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(
+            poll_seconds=0.01,
+            turn_timeout_seconds=5,
+            claude_quiescence_seconds=0.1,
+        ),
+    )
+
+    pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nrun checks")
+    with pytest.raises(ClaodexError, match="SMOKE SIGNAL"):
+        router.wait_for_response(pending=pending, timeout_seconds=0.5)

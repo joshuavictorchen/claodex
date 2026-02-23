@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .constants import STUCK_SKIP_ATTEMPTS, STUCK_SKIP_SECONDS
+from .constants import DEFAULT_CLAUDE_QUIESCENCE_SECONDS, STUCK_SKIP_ATTEMPTS, STUCK_SKIP_SECONDS
 from .errors import ClaodexError
 from .extract import extract_room_events_from_window
 from .state import (
@@ -33,6 +33,7 @@ class RoutingConfig:
 
     poll_seconds: float
     turn_timeout_seconds: int
+    claude_quiescence_seconds: float = DEFAULT_CLAUDE_QUIESCENCE_SECONDS
 
 
 @dataclass
@@ -332,10 +333,13 @@ class Router:
         observed_cursor = pending.before_cursor
         marker_scan_cursor = pending.before_cursor
         saw_codex_task_started = False
+        last_advance_time: float | None = None
 
         while time.monotonic() < deadline:
             self._ensure_target_alive(participant)
             current_cursor = self.refresh_source(target_agent)
+            if current_cursor > observed_cursor:
+                last_advance_time = time.monotonic()
             observed_cursor = current_cursor
 
             if current_cursor > marker_scan_cursor:
@@ -365,6 +369,31 @@ class Router:
                         agent=target_agent,
                         text=assistant_text,
                         source_cursor=turn_end.marker_line,
+                    )
+
+            # quiescence fallback: claude does not write turn_duration for
+            # short text-only turns.  when the JSONL stops growing and the
+            # last assistant entry has text (not tool_use), the turn is done.
+            if (
+                target_agent == "claude"
+                and last_advance_time is not None
+                and observed_cursor > pending.before_cursor
+                and time.monotonic() - last_advance_time
+                >= self.config.claude_quiescence_seconds
+                and self._is_claude_turn_quiescent(
+                    participant, pending.before_cursor, observed_cursor
+                )
+            ):
+                assistant_text = self._latest_assistant_message_between(
+                    source_agent=target_agent,
+                    start_line=pending.before_cursor,
+                    end_line=observed_cursor,
+                )
+                if assistant_text is not None:
+                    return ResponseTurn(
+                        agent=target_agent,
+                        text=assistant_text,
+                        source_cursor=observed_cursor,
                     )
 
             time.sleep(self.config.poll_seconds)
@@ -518,6 +547,77 @@ class Router:
                 continue
             return TurnEndScan(marker_line=absolute_line)
         return TurnEndScan(marker_line=None)
+
+    def _is_claude_turn_quiescent(
+        self,
+        participant: Participant,
+        start_line: int,
+        end_line: int,
+    ) -> bool:
+        """Check whether a Claude JSONL window ends in a turn-complete state.
+
+        Scans backwards from end_line for the last assistant or user entry.
+        Returns True only when the last such entry is an assistant message
+        whose content does not include tool_use blocks (indicating the agent
+        is finished rather than mid-tool-chain).
+
+        Args:
+            participant: Claude participant metadata.
+            start_line: Window start cursor (exclusive).
+            end_line: Window end cursor (inclusive).
+
+        Returns:
+            True when the window tail looks like a completed turn.
+        """
+        lines = read_lines_between(
+            participant.session_file, start_line=start_line, end_line=end_line
+        )
+        for raw_line in reversed(lines):
+            raw_line = raw_line.strip()
+            if not raw_line:
+                continue
+            try:
+                entry = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("isSidechain") or entry.get("isMeta"):
+                continue
+
+            entry_type = entry.get("type")
+
+            # skip non-message entries (progress, file-history-snapshot, etc.)
+            if entry_type not in ("assistant", "user"):
+                continue
+
+            message = entry.get("message", {})
+            if not isinstance(message, dict):
+                continue
+
+            role = message.get("role")
+            content = message.get("content")
+
+            if entry_type == "assistant" and role == "assistant":
+                # tool_use in content means claude is mid-tool-chain
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            return False
+                return True
+
+            if entry_type == "user" and role == "user":
+                # tool_result-only user entry means waiting for next assistant
+                if isinstance(content, list) and content:
+                    all_tool_result = all(
+                        isinstance(b, dict) and b.get("type") == "tool_result"
+                        for b in content
+                    )
+                    if all_tool_result:
+                        return False
+                return False
+
+        return False
 
     def _latest_assistant_message_between(
         self,

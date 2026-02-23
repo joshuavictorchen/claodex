@@ -40,6 +40,22 @@ def test_paste_content_uses_load_buffer_and_paste_buffer(monkeypatch):
     ]
 
 
+def test_paste_content_raises_when_load_buffer_fails(monkeypatch):
+    def fake_subprocess_run(args, **kwargs):
+        _ = (args, kwargs)
+        return subprocess.CompletedProcess(
+            args=["tmux", "load-buffer", "-"],
+            returncode=1,
+            stdout="",
+            stderr="command too long",
+        )
+
+    monkeypatch.setattr("claodex.tmux_ops.subprocess.run", fake_subprocess_run)
+
+    with pytest.raises(ClaodexError, match="command too long"):
+        paste_content("%1", "x" * 50000)
+
+
 def test_prefill_skill_commands_types_without_submitting(monkeypatch):
     """prefill_skill_commands types text into panes but does NOT send C-m."""
     calls: list[list[str]] = []

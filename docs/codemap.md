@@ -78,7 +78,7 @@ claodex/
 - **Interface**: `create_session()`, `paste_content()`, `resolve_layout()`, `is_pane_alive()`, `PaneLayout`
 - **Depends on**: constants, errors
 - **Depended on by**: cli
-- **Invariants**: paste uses `set-buffer --` + `paste-buffer -p -t` (atomic, flag-safe, `-p` skips bracketed-paste escapes that Codex's TUI mangles); submit delay scales with payload size (base 0.3s, +0.1s/1000 chars over 2000, capped at 2s)
+- **Invariants**: paste uses `load-buffer -` (stdin) + `paste-buffer -p -t` (atomic, avoids tmux CLI-argument size limits, and `-p` skips bracketed-paste escapes that Codex's TUI mangles); submit delay scales with payload size (base 0.3s, +0.1s/1000 chars over 2000, capped at 2s)
 
 #### Skill (`claodex/skill/`)
 
@@ -94,7 +94,7 @@ claodex/
 User types in CLI REPL
   → cli.py composes message (with peer delta from other agent's JSONL)
   → router.py:render_block() wraps events with --- source --- headers
-  → tmux_ops.py:paste_content() injects into target pane via set-buffer/paste-buffer
+  → tmux_ops.py:paste_content() injects into target pane via load-buffer/paste-buffer
   → Agent processes message, writes response to its JSONL
   → router.py:wait_for_response() polls JSONL for turn-end marker
   → extract.py parses JSONL window into room events
@@ -143,7 +143,7 @@ State on disk:
 
 - Google-style docstrings on all public functions
 - `dataclass(frozen=True)` for value objects
-- Tests in `tests/test_*.py` (coverage is partial — `test_cli.py`, `test_router.py`, `test_tmux_ops.py` exist; no `test_input_editor.py`, `test_extract.py`, or `test_state.py`)
+- Tests in `tests/test_*.py` (coverage is partial — `test_cli.py`, `test_input_editor.py`, `test_router.py`, `test_tmux_ops.py` exist; no `test_extract.py` or `test_state.py`)
 - Router accepts `paste_content` and `pane_alive` as constructor callbacks (testable without tmux)
 - Registration script is standalone (no imports from core `claodex` package) so it can run inside agent skill directories
 

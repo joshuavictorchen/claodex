@@ -457,8 +457,8 @@ During collab, the CLI MUST display progress:
 
 The CLI MUST use safe tmux buffer operations:
 
-1. `tmux set-buffer -- "<content>"` — load message into a tmux buffer.
-2. `tmux paste-buffer -t <pane>` — paste into the target pane.
+1. `tmux load-buffer -` (stdin) — load message into a tmux buffer.
+2. `tmux paste-buffer -p -t <pane>` — paste into the target pane (`-p` skips bracketed-paste wrappers).
 3. `tmux send-keys -t <pane> Enter` — submit the message.
 
 The CLI MUST NOT use `tmux send-keys -l` for message content (special
