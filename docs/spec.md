@@ -409,18 +409,37 @@ route.
 
 ### Turn detection
 
-The CLI MUST use source-native deterministic end markers only:
+The CLI uses a priority chain of deterministic signals:
 
-- **Claude:** `type == "system"` and `subtype == "turn_duration"`
-- **Codex:** `type == "event_msg"` and `payload.type == "task_complete"`
+**Codex:** `type == "event_msg"` and `payload.type == "task_complete"`. When
+`task_started` is observed in the scan window, the CLI MUST require a subsequent
+`task_complete` in the same window (preventing stale marker matching). When no
+`task_started` appears, a `task_complete` MAY be accepted directly.
 
-When a marker is observed, the CLI MUST extract the latest assistant message
-between the injected-message cursor and that marker line.
+**Claude (priority order):**
 
-If a marker is missing at timeout, or a marker exists but no assistant message
-is extractable in that marker window, the CLI MUST fail fast with an explicit
+1. **Fast path:** `type == "system"` and `subtype == "turn_duration"` in JSONL.
+   Instant and 100% reliable when present.
+2. **Stop-event fallback:** `Getting matching hook commands for Stop` in the
+   Claude debug log (`~/.claude/debug/{session_id}.txt`). Emitted at
+   end-of-turn by the Claude Code runtime even with zero hooks configured.
+   The event timestamp MUST be after the send time. Assistant text MUST exist
+   in the JSONL window before accepting completion.
+3. **Hard timeout:** fail fast with `SMOKE SIGNAL`.
+
+When a marker or Stop event is observed, the CLI MUST extract the latest
+assistant message between the injected-message cursor and that marker line.
+
+If no signal arrives at timeout, or a signal exists but no assistant message
+is extractable in that window, the CLI MUST fail fast with an explicit
 `SMOKE SIGNAL` error and halt routing. The CLI MUST NOT fall back to settle
 timers or heuristic guessing.
+
+**Interference detection:** During a Claude collab wait, if a non-meta user
+row appears in the JSONL after the anchor (our injected message) but before
+completion, the CLI MUST fail fast with an `interference detected` error and
+abort the collab turn. Meta user rows (command wrappers, system reminders,
+task notifications, continuation boilerplate) are excluded from this check.
 
 ### Termination
 

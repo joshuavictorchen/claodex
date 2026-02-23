@@ -27,6 +27,12 @@ DEFAULT_TURN_TIMEOUT_SECONDS = 300
 STUCK_SKIP_ATTEMPTS = 3
 STUCK_SKIP_SECONDS = 10.0
 
-# seconds of no JSONL growth before declaring a claude turn complete via
-# quiescence fallback (used when turn_duration marker is absent)
-DEFAULT_CLAUDE_QUIESCENCE_SECONDS = 3.0
+# path pattern for claude debug logs (Stop event fallback)
+CLAUDE_DEBUG_LOG_PATTERN = "~/.claude/debug/{session_id}.txt"
+
+# regex for the Stop hook dispatch line in claude debug logs.
+# anchored on ISO timestamp prefix to filter echoes in tool output.
+CLAUDE_STOP_EVENT_RE = (
+    r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)"
+    r"\s+\[DEBUG\]\s+Getting matching hook commands for Stop"
+)

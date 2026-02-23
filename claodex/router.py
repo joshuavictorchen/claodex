@@ -6,10 +6,29 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from .constants import DEFAULT_CLAUDE_QUIESCENCE_SECONDS, STUCK_SKIP_ATTEMPTS, STUCK_SKIP_SECONDS
+from .constants import (
+    CLAUDE_DEBUG_LOG_PATTERN,
+    CLAUDE_STOP_EVENT_RE,
+    STUCK_SKIP_ATTEMPTS,
+    STUCK_SKIP_SECONDS,
+)
+
+# meta user-row patterns that should be ignored during turn anchoring and
+# interference detection.  these appear in the JSONL as user entries but do
+# not represent real human input.
+_META_USER_PATTERNS = (
+    "<command-name>",
+    "<command-message>",
+    "<local-command-caveat>",
+    "<local-command-stdout>",
+    "<task-notification>",
+    "This session is being continued",
+    "<system-reminder>",
+)
 from .errors import ClaodexError
 from .extract import extract_room_events_from_window
 from .state import (
@@ -33,7 +52,6 @@ class RoutingConfig:
 
     poll_seconds: float
     turn_timeout_seconds: int
-    claude_quiescence_seconds: float = DEFAULT_CLAUDE_QUIESCENCE_SECONDS
 
 
 @dataclass
@@ -43,6 +61,7 @@ class PendingSend:
     target_agent: str
     before_cursor: int
     sent_text: str
+    sent_at: datetime | None = None
 
 
 @dataclass
@@ -97,6 +116,9 @@ class Router:
         self._pane_alive = pane_alive
         self.config = config
         self._stuck_state: dict[str, StuckCursorState] = {}
+        # byte offset into the claude debug log to avoid re-reading from the start
+        self._debug_log_offset: int = 0
+        self._stop_event_re = re.compile(CLAUDE_STOP_EVENT_RE)
 
     def refresh_source(self, source_agent: str) -> int:
         """Advance source read cursor by parsing newly appended lines.
@@ -267,6 +289,7 @@ class Router:
         payload, new_delivery_cursor = self.compose_user_message(target_agent, user_text)
         target = self.participants.for_agent(target_agent)
         self._ensure_target_alive(target)
+        sent_at = datetime.now(timezone.utc)
         self._paste_content(target.tmux_pane, payload)
         if new_delivery_cursor is not None:
             write_delivery_cursor(self.workspace_root, target_agent, new_delivery_cursor)
@@ -274,6 +297,7 @@ class Router:
             target_agent=target_agent,
             before_cursor=before_cursor,
             sent_text=payload,
+            sent_at=sent_at,
         )
 
     def send_routed_message(self, target_agent: str, source_agent: str, response_text: str) -> PendingSend:
@@ -296,6 +320,7 @@ class Router:
 
         target = self.participants.for_agent(target_agent)
         self._ensure_target_alive(target)
+        sent_at = datetime.now(timezone.utc)
         self._paste_content(target.tmux_pane, payload)
 
         source_cursor = read_read_cursor(self.workspace_root, source_agent)
@@ -304,6 +329,7 @@ class Router:
             target_agent=target_agent,
             before_cursor=before_cursor,
             sent_text=payload,
+            sent_at=sent_at,
         )
 
     def wait_for_response(
@@ -326,6 +352,9 @@ class Router:
             else self.config.turn_timeout_seconds
         )
         deadline = time.monotonic() + timeout
+        # use the actual send timestamp from PendingSend; fall back to now
+        # for callers that construct PendingSend manually (e.g. tests)
+        send_time = pending.sent_at or datetime.now(timezone.utc)
 
         target_agent = pending.target_agent
         participant = self.participants.for_agent(target_agent)
@@ -333,13 +362,11 @@ class Router:
         observed_cursor = pending.before_cursor
         marker_scan_cursor = pending.before_cursor
         saw_codex_task_started = False
-        last_advance_time: float | None = None
+        saw_stop_event = False
 
         while time.monotonic() < deadline:
             self._ensure_target_alive(participant)
             current_cursor = self.refresh_source(target_agent)
-            if current_cursor > observed_cursor:
-                last_advance_time = time.monotonic()
             observed_cursor = current_cursor
 
             if current_cursor > marker_scan_cursor:
@@ -371,30 +398,44 @@ class Router:
                         source_cursor=turn_end.marker_line,
                     )
 
-            # quiescence fallback: claude does not write turn_duration for
-            # short text-only turns.  when the JSONL stops growing and the
-            # last assistant entry has text (not tool_use), the turn is done.
-            if (
-                target_agent == "claude"
-                and last_advance_time is not None
-                and observed_cursor > pending.before_cursor
-                and time.monotonic() - last_advance_time
-                >= self.config.claude_quiescence_seconds
-                and self._is_claude_turn_quiescent(
-                    participant, pending.before_cursor, observed_cursor
-                )
-            ):
-                assistant_text = self._latest_assistant_message_between(
-                    source_agent=target_agent,
-                    start_line=pending.before_cursor,
-                    end_line=observed_cursor,
-                )
-                if assistant_text is not None:
-                    return ResponseTurn(
-                        agent=target_agent,
-                        text=assistant_text,
-                        source_cursor=observed_cursor,
+                # interference detection: if a non-meta user row appeared
+                # after the anchor, someone typed directly into the agent's
+                # terminal during the collab turn.
+                if target_agent == "claude":
+                    interference = self._detect_interference(
+                        participant=participant,
+                        before_cursor=pending.before_cursor,
+                        current_cursor=current_cursor,
+                        sent_text=pending.sent_text,
                     )
+                    if interference is not None:
+                        raise ClaodexError(
+                            f"interference detected in {target_agent} session: "
+                            f"unexpected user input while waiting for collab response. "
+                            f"snippet: {interference!r}"
+                        )
+
+            # stop-event fallback: when turn_duration is absent, check the
+            # claude debug log for a Stop hook dispatch event.  the flag is
+            # latched so consuming the debug log bytes is not repeated after
+            # the event is found — we just wait for assistant text to appear.
+            if target_agent == "claude" and current_cursor > pending.before_cursor:
+                if not saw_stop_event:
+                    saw_stop_event = self._scan_claude_debug_stop_event(
+                        participant, send_time
+                    )
+                if saw_stop_event:
+                    assistant_text = self._latest_assistant_message_between(
+                        source_agent=target_agent,
+                        start_line=pending.before_cursor,
+                        end_line=current_cursor,
+                    )
+                    if assistant_text is not None:
+                        return ResponseTurn(
+                            agent=target_agent,
+                            text=assistant_text,
+                            source_cursor=current_cursor,
+                        )
 
             time.sleep(self.config.poll_seconds)
 
@@ -548,31 +589,97 @@ class Router:
             return TurnEndScan(marker_line=absolute_line)
         return TurnEndScan(marker_line=None)
 
-    def _is_claude_turn_quiescent(
+    def _scan_claude_debug_stop_event(
         self,
         participant: Participant,
-        start_line: int,
-        end_line: int,
+        send_time: datetime,
     ) -> bool:
-        """Check whether a Claude JSONL window ends in a turn-complete state.
+        """Check the claude debug log for a Stop event after send_time.
 
-        Scans backwards from end_line for the last assistant or user entry.
-        Returns True only when the last such entry is an assistant message
-        whose content does not include tool_use blocks (indicating the agent
-        is finished rather than mid-tool-chain).
+        Reads from a stored byte offset to avoid re-scanning the whole file.
 
         Args:
             participant: Claude participant metadata.
-            start_line: Window start cursor (exclusive).
-            end_line: Window end cursor (inclusive).
+            send_time: UTC timestamp of the injected message.
 
         Returns:
-            True when the window tail looks like a completed turn.
+            True when a Stop event with a timestamp after send_time is found.
+        """
+        # debug logs currently emit millisecond timestamps. floor send_time to
+        # the same precision to avoid rejecting same-millisecond Stop events.
+        if send_time.tzinfo is None:
+            send_time = send_time.replace(tzinfo=timezone.utc)
+        else:
+            send_time = send_time.astimezone(timezone.utc)
+        send_time = send_time.replace(
+            microsecond=(send_time.microsecond // 1000) * 1000
+        )
+
+        debug_path = Path(
+            CLAUDE_DEBUG_LOG_PATTERN.format(session_id=participant.session_id)
+        ).expanduser()
+        if not debug_path.exists():
+            return False
+
+        try:
+            file_size = debug_path.stat().st_size
+            # reset offset if file was truncated or rotated
+            if file_size < self._debug_log_offset:
+                self._debug_log_offset = 0
+            with debug_path.open("r", encoding="utf-8", errors="replace") as fh:
+                fh.seek(self._debug_log_offset)
+                new_content = fh.read()
+                self._debug_log_offset = fh.tell()
+        except OSError:
+            return False
+
+        if not new_content:
+            return False
+
+        for line in new_content.splitlines():
+            match = self._stop_event_re.match(line)
+            if match is None:
+                continue
+            try:
+                event_time = datetime.fromisoformat(match.group(1).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if event_time >= send_time:
+                return True
+        return False
+
+    def _detect_interference(
+        self,
+        participant: Participant,
+        before_cursor: int,
+        current_cursor: int,
+        sent_text: str,
+    ) -> str | None:
+        """Detect unexpected user input during a collab wait.
+
+        Scans JSONL between before_cursor and current_cursor for non-meta user
+        rows. The anchor is identified by matching against sent_text; any
+        additional non-meta user row (including a non-matching first row) is
+        interference.
+
+        Args:
+            participant: Target participant metadata.
+            before_cursor: Cursor before the injected send.
+            current_cursor: Current read cursor position.
+            sent_text: The text we injected (for anchor matching).
+
+        Returns:
+            A snippet of the interfering user text, or None if clean.
         """
         lines = read_lines_between(
-            participant.session_file, start_line=start_line, end_line=end_line
+            participant.session_file,
+            start_line=before_cursor,
+            end_line=current_cursor,
         )
-        for raw_line in reversed(lines):
+
+        normalized_sent = _normalize_for_anchor(sent_text)
+        anchor_found = False
+        for raw_line in lines:
             raw_line = raw_line.strip()
             if not raw_line:
                 continue
@@ -582,42 +689,57 @@ class Router:
                 continue
             if not isinstance(entry, dict):
                 continue
-            if entry.get("isSidechain") or entry.get("isMeta"):
-                continue
-
-            entry_type = entry.get("type")
-
-            # skip non-message entries (progress, file-history-snapshot, etc.)
-            if entry_type not in ("assistant", "user"):
+            if entry.get("type") != "user":
                 continue
 
             message = entry.get("message", {})
             if not isinstance(message, dict):
                 continue
+            content = message.get("content", "")
 
-            role = message.get("role")
-            content = message.get("content")
+            # tool_result entries are part of the agent's tool chain, not user input
+            if isinstance(content, list):
+                if all(
+                    isinstance(b, dict) and b.get("type") == "tool_result"
+                    for b in content
+                ):
+                    continue
 
-            if entry_type == "assistant" and role == "assistant":
-                # tool_use in content means claude is mid-tool-chain
-                if isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "tool_use":
-                            return False
-                return True
+            # flatten content to text for meta and anchor checks
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text = " ".join(
+                    b.get("text", "") if isinstance(b, dict) else str(b)
+                    for b in content
+                )
+            else:
+                continue
 
-            if entry_type == "user" and role == "user":
-                # tool_result-only user entry means waiting for next assistant
-                if isinstance(content, list) and content:
-                    all_tool_result = all(
-                        isinstance(b, dict) and b.get("type") == "tool_result"
-                        for b in content
-                    )
-                    if all_tool_result:
-                        return False
-                return False
+            if _is_meta_user_text(text):
+                continue
 
-        return False
+            # anchor match: the JSONL may record the full pasted text (with
+            # protocol headers) or just the content portion, so check both
+            # equality and containment in either direction.
+            if not anchor_found:
+                normalized_text = _normalize_for_anchor(text)
+                if (
+                    normalized_text == normalized_sent
+                    or normalized_text in normalized_sent
+                    or normalized_sent in normalized_text
+                ):
+                    anchor_found = True
+                    continue
+                # first non-meta user row doesn't match our send — interference
+                snippet = text[:120]
+                return snippet
+
+            # any non-meta user row after the anchor is interference
+            snippet = text[:120]
+            return snippet
+
+        return None
 
     def _latest_assistant_message_between(
         self,
@@ -641,7 +763,7 @@ class Router:
         if target_agent == "codex":
             return "event_msg.payload.type=task_complete"
         if target_agent == "claude":
-            return "system.subtype=turn_duration"
+            return "system.subtype=turn_duration or debug-log Stop event"
         raise ClaodexError(f"validation error: unsupported target agent: {target_agent}")
 
     def _ensure_target_alive(self, participant: Participant) -> None:
@@ -652,6 +774,41 @@ class Router:
         """
         if not self._pane_alive(participant.tmux_pane):
             raise ClaodexError(f"target pane is not alive: {participant.agent} ({participant.tmux_pane})")
+
+
+def _normalize_for_anchor(text: str) -> str:
+    """Normalize text for anchor comparison.
+
+    Collapses whitespace and strips to handle minor formatting differences
+    between what we sent and what appears in the JSONL.
+
+    Args:
+        text: Raw text to normalize.
+
+    Returns:
+        Normalized text for comparison.
+    """
+    return " ".join(text.split())
+
+
+def _is_meta_user_text(text: str) -> bool:
+    """Return True if user text matches a known meta pattern.
+
+    Meta user rows are injected by the Claude Code runtime (command wrappers,
+    task notifications, continuation boilerplate) and should be ignored during
+    turn anchoring and interference detection.
+
+    Args:
+        text: Flattened user message text.
+
+    Returns:
+        True if the text starts with or contains a meta pattern.
+    """
+    stripped = text.strip()
+    for pattern in _META_USER_PATTERNS:
+        if stripped.startswith(pattern):
+            return True
+    return False
 
 
 def render_block(source: str, body: str) -> str:

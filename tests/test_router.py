@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 
@@ -326,6 +327,42 @@ def test_send_user_message_includes_peer_delta_and_advances_delivery_cursor(tmp_
     assert read_delivery_cursor(workspace, "codex") == read_read_cursor(workspace, "claude")
 
 
+def test_send_user_message_stamps_sent_at_before_paste(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    _write_jsonl(claude_session, [])
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "claude", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+
+    paste_seen_at: datetime | None = None
+
+    def _record_paste_time(_pane: str, _content: str) -> None:
+        nonlocal paste_seen_at
+        paste_seen_at = datetime.now(timezone.utc)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=_record_paste_time,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=5),
+    )
+
+    pending = router.send_user_message("claude", "hello")
+    assert pending.sent_at is not None
+    assert paste_seen_at is not None
+    assert pending.sent_at <= paste_seen_at
+
+
 def test_refresh_source_skips_stuck_malformed_tail_after_retries(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -576,7 +613,7 @@ def test_wait_for_response_claude_waits_for_tool_completion(tmp_path):
     pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nrun checks")
     with pytest.raises(
         ClaodexError,
-        match="SMOKE SIGNAL: claude emitted assistant output but no system.subtype=turn_duration marker",
+        match="SMOKE SIGNAL: claude emitted assistant output but no system.subtype=turn_duration or debug-log Stop event marker",
     ):
         router.wait_for_response(pending=pending, timeout_seconds=0.2)
 
@@ -641,8 +678,8 @@ def test_wait_for_response_claude_simple_turn_duration(tmp_path):
     assert response.text == "simple answer"
 
 
-def test_wait_for_response_claude_quiescence_fallback(tmp_path):
-    """Claude turn without turn_duration is detected via quiescence."""
+def test_wait_for_response_claude_stop_event_fallback(tmp_path):
+    """Claude turn without turn_duration is detected via debug-log Stop event."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     ensure_state_layout(workspace)
@@ -653,6 +690,14 @@ def test_wait_for_response_claude_quiescence_fallback(tmp_path):
     _write_jsonl(claude_session, _claude_entries("hello", "hey there"))
     _write_jsonl(codex_session, _codex_entries("ack", "ack"))
 
+    # write a debug log with a Stop event
+    debug_dir = tmp_path / "debug"
+    debug_dir.mkdir()
+    debug_log = debug_dir / "claude-session.txt"
+    debug_log.write_text(
+        "2099-01-01T00:00:00.000Z [DEBUG] Getting matching hook commands for Stop with query: undefined\n"
+    )
+
     participants = _participants(workspace, claude_session, codex_session)
     write_read_cursor(workspace, "claude", 0)
     write_read_cursor(workspace, "codex", 3)
@@ -664,29 +709,205 @@ def test_wait_for_response_claude_quiescence_fallback(tmp_path):
         participants=participants,
         paste_content=lambda pane, content: None,
         pane_alive=lambda pane: True,
-        config=RoutingConfig(
-            poll_seconds=0.01,
-            turn_timeout_seconds=5,
-            claude_quiescence_seconds=0.1,
-        ),
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=5),
     )
 
-    pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello")
-    response = router.wait_for_response(pending=pending, timeout_seconds=2.0)
-    assert response.agent == "claude"
-    assert response.text == "hey there"
+    # patch the debug log path to use our tmp file
+    import claodex.router as router_module
+    original_pattern = router_module.CLAUDE_DEBUG_LOG_PATTERN
+    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace("claude-session", "{session_id}")
+    try:
+        pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello")
+        response = router.wait_for_response(pending=pending, timeout_seconds=2.0)
+        assert response.agent == "claude"
+        assert response.text == "hey there"
+    finally:
+        router_module.CLAUDE_DEBUG_LOG_PATTERN = original_pattern
 
 
-def test_wait_for_response_claude_quiescence_blocked_by_tool_use(tmp_path):
-    """Quiescence must not fire when the last assistant entry has tool_use."""
+def test_wait_for_response_claude_stop_event_no_assistant_text(tmp_path):
+    """Stop event fires but no assistant text after anchor — should timeout, not succeed."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     ensure_state_layout(workspace)
 
     claude_session = tmp_path / "claude.jsonl"
     codex_session = tmp_path / "codex.jsonl"
-    # incomplete tool turn: assistant has tool_use but no tool_result/turn_duration
-    _write_jsonl(claude_session, _claude_tool_entries(tool_complete=False))
+    # only a user entry, no assistant response
+    _write_jsonl(
+        claude_session,
+        [
+            {
+                "timestamp": "2026-02-22T10:00:00Z",
+                "type": "user",
+                "sessionId": "claude-session",
+                "message": {"role": "user", "content": "hello"},
+            },
+        ],
+    )
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    debug_dir = tmp_path / "debug"
+    debug_dir.mkdir()
+    debug_log = debug_dir / "claude-session.txt"
+    debug_log.write_text(
+        "2099-01-01T00:00:00.000Z [DEBUG] Getting matching hook commands for Stop with query: undefined\n"
+    )
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=5),
+    )
+
+    import claodex.router as router_module
+    original_pattern = router_module.CLAUDE_DEBUG_LOG_PATTERN
+    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace("claude-session", "{session_id}")
+    try:
+        pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello")
+        with pytest.raises(ClaodexError, match="SMOKE SIGNAL"):
+            router.wait_for_response(pending=pending, timeout_seconds=0.3)
+    finally:
+        router_module.CLAUDE_DEBUG_LOG_PATTERN = original_pattern
+
+
+def test_wait_for_response_claude_stop_event_ignores_stale(tmp_path):
+    """Stop events from before send_time are ignored."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    _write_jsonl(claude_session, _claude_entries("hello", "hey there"))
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    # write a stale Stop event from 2020
+    debug_dir = tmp_path / "debug"
+    debug_dir.mkdir()
+    debug_log = debug_dir / "claude-session.txt"
+    debug_log.write_text(
+        "2020-01-01T00:00:00.000Z [DEBUG] Getting matching hook commands for Stop with query: undefined\n"
+    )
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=5),
+    )
+
+    import claodex.router as router_module
+    original_pattern = router_module.CLAUDE_DEBUG_LOG_PATTERN
+    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace("claude-session", "{session_id}")
+    try:
+        pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello")
+        # stale Stop event should be ignored — timeout
+        with pytest.raises(ClaodexError, match="SMOKE SIGNAL"):
+            router.wait_for_response(pending=pending, timeout_seconds=0.3)
+    finally:
+        router_module.CLAUDE_DEBUG_LOG_PATTERN = original_pattern
+
+
+def test_wait_for_response_claude_stop_event_same_millisecond_as_send_time(tmp_path):
+    """Stop event with millisecond precision is accepted for same-ms send_time."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    _write_jsonl(claude_session, _claude_entries("hello", "hey there"))
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    debug_dir = tmp_path / "debug"
+    debug_dir.mkdir()
+    debug_log = debug_dir / "claude-session.txt"
+    debug_log.write_text(
+        "2026-02-22T10:00:00.123Z [DEBUG] Getting matching hook commands for Stop with query: undefined\n"
+    )
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=5),
+    )
+
+    import claodex.router as router_module
+    original_pattern = router_module.CLAUDE_DEBUG_LOG_PATTERN
+    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace("claude-session", "{session_id}")
+    try:
+        pending = PendingSend(
+            target_agent="claude",
+            before_cursor=0,
+            sent_text="--- user ---\nhello",
+            sent_at=datetime(2026, 2, 22, 10, 0, 0, 123900, tzinfo=timezone.utc),
+        )
+        response = router.wait_for_response(pending=pending, timeout_seconds=0.5)
+        assert response.agent == "claude"
+        assert response.text == "hey there"
+    finally:
+        router_module.CLAUDE_DEBUG_LOG_PATTERN = original_pattern
+
+
+def test_wait_for_response_claude_interference_detection(tmp_path):
+    """Unexpected user input during collab wait triggers interference error."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    # two non-meta user entries: our injected message + an accidental direct input
+    _write_jsonl(
+        claude_session,
+        [
+            {
+                "timestamp": "2026-02-22T10:00:00Z",
+                "type": "user",
+                "sessionId": "claude-session",
+                "message": {"role": "user", "content": "--- codex ---\ncollab message"},
+            },
+            {
+                "timestamp": "2026-02-22T10:00:01Z",
+                "type": "user",
+                "sessionId": "claude-session",
+                "message": {"role": "user", "content": "oops I typed here by accident"},
+            },
+            {
+                "timestamp": "2026-02-22T10:00:02Z",
+                "type": "assistant",
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "wrong response"}],
+                },
+            },
+        ],
+    )
     _write_jsonl(codex_session, _codex_entries("ack", "ack"))
 
     participants = _participants(workspace, claude_session, codex_session)
@@ -700,13 +921,128 @@ def test_wait_for_response_claude_quiescence_blocked_by_tool_use(tmp_path):
         participants=participants,
         paste_content=lambda pane, content: None,
         pane_alive=lambda pane: True,
-        config=RoutingConfig(
-            poll_seconds=0.01,
-            turn_timeout_seconds=5,
-            claude_quiescence_seconds=0.1,
-        ),
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=5),
     )
 
-    pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nrun checks")
-    with pytest.raises(ClaodexError, match="SMOKE SIGNAL"):
+    pending = PendingSend(
+        target_agent="claude", before_cursor=0, sent_text="--- codex ---\ncollab message"
+    )
+    with pytest.raises(ClaodexError, match="interference detected"):
+        router.wait_for_response(pending=pending, timeout_seconds=0.5)
+
+
+def test_wait_for_response_claude_meta_rows_not_interference(tmp_path):
+    """Meta user rows (command wrappers, system reminders) do not trigger interference."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    # our injected message + a meta user row (system-reminder) + assistant response + turn_duration
+    _write_jsonl(
+        claude_session,
+        [
+            {
+                "timestamp": "2026-02-22T10:00:00Z",
+                "type": "user",
+                "sessionId": "claude-session",
+                "message": {"role": "user", "content": "--- codex ---\ncollab message"},
+            },
+            {
+                "timestamp": "2026-02-22T10:00:01Z",
+                "type": "user",
+                "sessionId": "claude-session",
+                "message": {"role": "user", "content": "<system-reminder>some context</system-reminder>"},
+            },
+            {
+                "timestamp": "2026-02-22T10:00:02Z",
+                "type": "assistant",
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "correct response"}],
+                },
+            },
+            {
+                "timestamp": "2026-02-22T10:00:03Z",
+                "type": "system",
+                "subtype": "turn_duration",
+                "isMeta": False,
+            },
+        ],
+    )
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=5),
+    )
+
+    pending = PendingSend(
+        target_agent="claude", before_cursor=0, sent_text="--- codex ---\ncollab message"
+    )
+    response = router.wait_for_response(pending=pending, timeout_seconds=1.0)
+    assert response.agent == "claude"
+    assert response.text == "correct response"
+
+
+def test_wait_for_response_claude_interference_wrong_first_row(tmp_path):
+    """Non-matching first user row is detected as interference (out-of-band input before anchor)."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    # only row is out-of-band user input that doesn't match sent_text
+    _write_jsonl(
+        claude_session,
+        [
+            {
+                "timestamp": "2026-02-22T10:00:00Z",
+                "type": "user",
+                "sessionId": "claude-session",
+                "message": {"role": "user", "content": "some unrelated question"},
+            },
+            {
+                "timestamp": "2026-02-22T10:00:01Z",
+                "type": "assistant",
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "wrong response"}],
+                },
+            },
+        ],
+    )
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=5),
+    )
+
+    pending = PendingSend(
+        target_agent="claude", before_cursor=0, sent_text="--- codex ---\ncollab message"
+    )
+    with pytest.raises(ClaodexError, match="interference detected"):
         router.wait_for_response(pending=pending, timeout_seconds=0.5)

@@ -38,12 +38,12 @@ claodex/
 
 #### Router (`claodex/router.py`)
 
-- **Owns**: event extraction, delta composition, message delivery, response waiting
-- **Key files**: `router.py` (Router class, render_block, strip_injected_context)
+- **Owns**: event extraction, delta composition, message delivery, response waiting, turn-end detection, interference detection
+- **Key files**: `router.py` (Router class, render_block, strip_injected_context, _is_meta_user_text)
 - **Interface**: `Router.send_user_message()`, `Router.send_routed_message()`, `Router.wait_for_response()`, `render_block()`, `strip_injected_context()`
-- **Depends on**: extract, state, constants, errors
+- **Depends on**: extract, state, constants, errors; Claude debug log (`~/.claude/debug/{session_id}.txt`) as side-channel for Stop-event fallback
 - **Depended on by**: cli
-- **Invariants**: delivery cursor never exceeds peer read cursor; read cursor never moves backward; user messages are stripped of injected context before delta composition
+- **Invariants**: delivery cursor never exceeds peer read cursor; read cursor never moves backward; user messages are stripped of injected context before delta composition; Claude turn detection uses `turn_duration → Stop-event → timeout` priority chain; unexpected non-meta user input during collab wait triggers interference error
 
 #### Extraction (`claodex/extract.py`)
 
@@ -117,7 +117,7 @@ State on disk:
 | Reattach | `cli.py:_run_attach` | Resolves layout, validates panes, resumes REPL |
 | Message sending | `router.py:send_user_message` | Composes delta + user text, pastes to pane |
 | Collab mode | `cli.py:_run_collab` | Automated multi-turn; uses `Router.send_routed_message` + `wait_for_response` |
-| Response detection | `router.py:_scan_*_turn_end_marker` | Claude: `system.turn_duration`; Codex: `task_complete` after `task_started` |
+| Response detection | `router.py:_scan_*_turn_end_marker`, `_scan_claude_debug_stop_event`, `_detect_interference` | Claude: `turn_duration` → debug-log Stop event → timeout; Codex: `task_complete` after `task_started`. Interference detection aborts on unexpected user input. |
 | JSONL extraction | `extract.py:_extract_claude_room_events`, `_extract_codex_room_events` | Agent-specific parsers |
 | Header stripping | `router.py:strip_injected_context` | Removes nested `--- source ---` blocks from forwarded user messages |
 | Registration | `skill/scripts/register.py` | Discovers session file, writes participant JSON |
@@ -168,4 +168,5 @@ State on disk:
 - **Skill duplication**: `claodex/skill/scripts/register.py` duplicates session discovery logic from `claodex/extract.py` because the skill must be standalone (no package imports)
 - **Agent self-headers**: agents may format responses with `--- agent ---` headers despite SKILL.md instructions, causing double headers on delivery. The current mitigation is prompt-level only (SKILL.md line 25); no code-level stripping exists
 - **Codex turn detection**: requires `task_started` → `task_complete` sequence; a `task_complete` without prior `task_started` in the scan window is accepted but could match a stale marker from a previous turn
+- **Claude debug log dependency**: the Stop-event fallback reads `~/.claude/debug/{session_id}.txt`, which is undocumented and may change between Claude Code versions. Falls through to timeout if the file is missing or the format changes.
 - **Exact-width wrap boundary**: `input_editor.py` handles the terminal phantom-row case at exact column multiples by clamping cursor to the last content row; this may place the cursor one column early on some terminals
