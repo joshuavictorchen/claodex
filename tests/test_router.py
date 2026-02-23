@@ -250,6 +250,22 @@ def test_parse_collab_request_requires_message():
         parse_collab_request("/collab --turns 3", default_start="claude")
 
 
+def test_parse_collab_request_unmatched_quote():
+    with pytest.raises(ClaodexError, match="validation error"):
+        parse_collab_request('/collab --turns 3 "unterminated', default_start="claude")
+
+
+def test_parse_collab_request_rejects_unknown_option():
+    with pytest.raises(ClaodexError, match="unknown option"):
+        parse_collab_request("/collab --turn 3 do stuff", default_start="claude")
+
+
+def test_parse_collab_request_double_dash_terminates_options():
+    parsed = parse_collab_request("/collab --turns 2 -- --this starts with dashes", default_start="claude")
+    assert parsed.turns == 2
+    assert parsed.message == "--this starts with dashes"
+
+
 def test_strip_injected_context_keeps_final_user_block():
     message = """--- user ---
 seed question

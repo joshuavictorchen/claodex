@@ -515,7 +515,9 @@ class ClaodexApplication:
                 continue
 
             if event.kind == "quit":
-                print("input closed")
+                print("shutting down...")
+                kill_session(SESSION_NAME)
+                print("session killed")
                 return
 
             if event.kind == "toggle":
@@ -532,6 +534,9 @@ class ClaodexApplication:
 
                 if text.startswith("/"):
                     if text == "/quit":
+                        print("shutting down...")
+                        kill_session(SESSION_NAME)
+                        print("session killed")
                         return
                     if text == "/status":
                         self._print_status(workspace_root, participants)
@@ -785,7 +790,10 @@ def parse_collab_request(command_text: str, default_start: str) -> CollabRequest
     """
     import shlex
 
-    pieces = shlex.split(command_text)
+    try:
+        pieces = shlex.split(command_text)
+    except ValueError as exc:
+        raise ClaodexError(f"validation error: {exc}") from exc
     if not pieces or pieces[0] != "/collab":
         raise ClaodexError("validation error: malformed collab command")
 
@@ -817,6 +825,13 @@ def parse_collab_request(command_text: str, default_start: str) -> CollabRequest
             index += 2
             continue
 
+        # explicit end-of-options marker
+        if token == "--":
+            index += 1
+            break
+        # reject unrecognized options before they silently become message text
+        if token.startswith("--"):
+            raise ClaodexError(f"validation error: unknown option '{token}'")
         break
 
     message = " ".join(pieces[index:]).strip()

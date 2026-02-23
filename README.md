@@ -26,20 +26,33 @@ agent registration retries.
 When you're done:
 
 ```bash
-/quit          # from inside the REPL
-# or
-tmux kill-session -t claodex   # from any terminal
+/quit          # kills agents, tmux session, and exits
 ```
 
-To reconnect to a running session (e.g. after closing your terminal):
+### Detach and reattach
+
+If you detach from tmux (`Ctrl+b` then `d`) or your terminal disconnects,
+the agents keep running. Reattach with:
 
 ```bash
-python3 -m claodex attach
+claodex attach
 ```
 
-`attach` requires:
-- an existing tmux session named `claodex`
-- existing `.claodex/` state files from a prior successful startup
+### Resume after `/quit` or WSL restart
+
+`/quit` tears everything down. To start a fresh session that picks up each
+agent's conversation history:
+
+```bash
+claodex                    # start a new session
+# once both agents are running, send each a short context primer:
+#   codex ❯ summarize your last session and continue where you left off
+#   claude ❯ summarize your last session and continue where you left off
+```
+
+Both agents retain their full JSONL session logs across restarts. Sending a
+primer message lets them re-orient from their own history without claodex
+needing to replay state.
 
 ## tmux survival guide
 
@@ -91,7 +104,7 @@ codex ❯ _
 | `Enter` | Send message to current target |
 | `Ctrl+J` | Insert a newline (for multi-line messages) |
 | Up/Down arrows | Browse input history |
-| `Ctrl+D` | Quit |
+| `Ctrl+D` | Quit (same as `/quit`) |
 
 ## Commands
 
@@ -102,7 +115,7 @@ codex ❯ _
 | `/collab --start codex <message>` | Start collab with Codex going first |
 | `/halt` | Request graceful halt of a running collab |
 | `/status` | Show participant info and cursor positions |
-| `/quit` | Exit the CLI (agents and tmux session stay alive) |
+| `/quit` | Kill agents, tmux session, and exit |
 
 ## How it works
 

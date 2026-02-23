@@ -58,8 +58,19 @@ def session_exists(session_name: str = SESSION_NAME) -> bool:
 
 
 def kill_session(session_name: str = SESSION_NAME) -> None:
-    """Kill a tmux session if present."""
+    """Kill a tmux session and verify it is gone.
+
+    Args:
+        session_name: tmux session to kill.
+
+    Raises:
+        ClaodexError: If the session still exists after kill attempt.
+    """
+    if not session_exists(session_name):
+        return
     _run_tmux(["kill-session", "-t", session_name], capture_output=True, check=False)
+    if session_exists(session_name):
+        raise ClaodexError(f"tmux session '{session_name}' survived kill attempt")
 
 
 def create_session(workspace_root: Path, session_name: str = SESSION_NAME) -> PaneLayout:

@@ -230,7 +230,7 @@ to the current target.
 | `/collab [--turns N] <message>` | Start collaboration mode. Default turns: 10. |
 | `/halt` | Stop collaboration mode after the current turn completes. |
 | `/status` | Show agent status, cursor positions, collab state. |
-| `/quit` | Exit the CLI. Agents continue running independently. |
+| `/quit` | Kill agent sessions, tmux session, and exit. |
 
 ### Keyboard shortcuts
 
@@ -574,9 +574,10 @@ Stop reason: <turns_reached | user_halt | timeout | agent_exited>
 3. **Cursor monotonicity.** All cursors (read and delivery) MUST only advance
    or stay unchanged. They MUST NOT retreat.
 
-4. **Agent independence.** Agents continue running if the CLI exits or
-   crashes. The CLI observes agents; it does not own their lifecycle beyond
-   initial startup.
+4. **Agent independence (detach/crash).** Agents continue running if the
+   CLI detaches (`Ctrl+b d`) or crashes. The CLI observes agents; it does
+   not own their lifecycle during normal operation. `/quit` and `Ctrl+D`
+   are explicit teardown commands that kill agents and the tmux session.
 
 5. **Session isolation.** One `claodex` tmux session at a time per machine.
    Concurrent sessions are not supported.
