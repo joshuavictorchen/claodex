@@ -39,93 +39,147 @@ class InputEditor:
         buffer: list[str] = []
         cursor = 0
         history_index: int | None = None
+        pasting = False
         # (total visual rows, cursor's visual row from top of render)
         previous_render = (1, 0)
 
         self._write(prompt)
 
         with _raw_terminal_mode(sys.stdin.fileno()):
-            decoder = codecs.getincrementaldecoder("utf-8")()
-            while True:
-                char = os.read(sys.stdin.fileno(), 1)
-                if not char:
-                    return InputEvent(kind="quit")
+            # enable bracketed paste so the terminal wraps pasted text in
+            # \x1b[200~ ... \x1b[201~ — inside the bracket, \r becomes a
+            # literal newline instead of submit
+            self._write("\x1b[?2004h")
+            try:
+                return self._read_loop(
+                    prompt, buffer, cursor, history_index, pasting, previous_render
+                )
+            finally:
+                self._write("\x1b[?2004l")
 
-                key = _decode_utf8_key(decoder, char)
-                if key is None:
-                    continue
+    def _read_loop(
+        self,
+        prompt: str,
+        buffer: list[str],
+        cursor: int,
+        history_index: int | None,
+        pasting: bool,
+        previous_render: tuple[int, int],
+    ) -> InputEvent:
+        """Core input loop, split out so bracketed paste cleanup is guaranteed.
 
-                if key == "\t":
-                    self._clear_render(previous_render)
-                    return InputEvent(kind="toggle")
+        Args:
+            prompt: Prompt string.
+            buffer: Character buffer.
+            cursor: Cursor position.
+            history_index: Current history navigation index.
+            pasting: Whether we are inside a bracketed paste.
+            previous_render: Previous render state.
 
-                if key == "\x03":
-                    raise KeyboardInterrupt
+        Returns:
+            InputEvent for submitted text or control action.
+        """
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        while True:
+            char = os.read(sys.stdin.fileno(), 1)
+            if not char:
+                return InputEvent(kind="quit")
 
-                if key == "\x04":
-                    self._write("\r\n")
-                    return InputEvent(kind="quit")
+            key = _decode_utf8_key(decoder, char)
+            if key is None:
+                continue
 
-                # ctrl+j (0x0a / \n) inserts a newline into the buffer
-                if key == "\x0a":
-                    buffer.insert(cursor, "\n")
+            if key == "\t":
+                if pasting:
+                    # preserve literal tabs from pasted content
+                    buffer.insert(cursor, "\t")
                     cursor += 1
                     previous_render = self._render(prompt, buffer, cursor, previous_render)
                     continue
+                self._clear_render(previous_render)
+                return InputEvent(kind="toggle")
 
-                # carriage return submits (Enter sends \r in raw mode)
-                if key == "\r":
-                    text = "".join(buffer)
-                    self._write("\r\n")
-                    if text.strip():
-                        self._history.append(text)
-                    return InputEvent(kind="submit", value=text)
+            if key == "\x03" and not pasting:
+                raise KeyboardInterrupt
 
-                if key in {"\x7f", "\b"}:
-                    if cursor > 0:
-                        del buffer[cursor - 1]
-                        cursor -= 1
-                    previous_render = self._render(prompt, buffer, cursor, previous_render)
+            if key == "\x04" and not pasting:
+                self._write("\r\n")
+                return InputEvent(kind="quit")
+
+            # ctrl+j (0x0a / \n) inserts a newline; during paste, \r also
+            # inserts a newline instead of submitting
+            if key == "\x0a" or (key == "\r" and pasting):
+                buffer.insert(cursor, "\n")
+                cursor += 1
+                previous_render = self._render(prompt, buffer, cursor, previous_render)
+                continue
+
+            # carriage return submits (Enter sends \r in raw mode)
+            if key == "\r":
+                text = "".join(buffer)
+                self._write("\r\n")
+                if text.strip():
+                    self._history.append(text)
+                return InputEvent(kind="submit", value=text)
+
+            if key in {"\x7f", "\b"}:
+                if cursor > 0:
+                    del buffer[cursor - 1]
+                    cursor -= 1
+                previous_render = self._render(prompt, buffer, cursor, previous_render)
+                continue
+
+            # escape sequences: during paste, only bracket boundaries are
+            # handled — other ANSI sequences (color codes, cursor movement,
+            # etc.) are intentionally consumed and dropped to prevent raw
+            # terminal control codes from corrupting the buffer
+            if key == "\x1b":
+                sequence = self._read_escape_sequence()
+
+                # bracketed paste boundaries
+                if sequence == "[200~":
+                    pasting = True
+                    continue
+                if sequence == "[201~":
+                    pasting = False
                     continue
 
-                if key == "\x1b":
-                    sequence = self._read_escape_sequence()
-                    if sequence in {"[C", "OC"}:  # right
-                        cursor = min(cursor + 1, len(buffer))
-                    elif sequence in {"[D", "OD"}:  # left
-                        cursor = max(cursor - 1, 0)
-                    elif sequence in {"[A", "OA"}:  # up history
-                        if self._history:
-                            if history_index is None:
-                                history_index = len(self._history) - 1
-                            else:
-                                history_index = max(0, history_index - 1)
+                if sequence in {"[C", "OC"}:  # right
+                    cursor = min(cursor + 1, len(buffer))
+                elif sequence in {"[D", "OD"}:  # left
+                    cursor = max(cursor - 1, 0)
+                elif sequence in {"[A", "OA"}:  # up history
+                    if self._history:
+                        if history_index is None:
+                            history_index = len(self._history) - 1
+                        else:
+                            history_index = max(0, history_index - 1)
+                        buffer = list(self._history[history_index])
+                        cursor = len(buffer)
+                elif sequence in {"[B", "OB"}:  # down history
+                    if self._history:
+                        if history_index is None:
+                            pass
+                        elif history_index >= len(self._history) - 1:
+                            history_index = None
+                            buffer = []
+                            cursor = 0
+                        else:
+                            history_index += 1
                             buffer = list(self._history[history_index])
                             cursor = len(buffer)
-                    elif sequence in {"[B", "OB"}:  # down history
-                        if self._history:
-                            if history_index is None:
-                                pass
-                            elif history_index >= len(self._history) - 1:
-                                history_index = None
-                                buffer = []
-                                cursor = 0
-                            else:
-                                history_index += 1
-                                buffer = list(self._history[history_index])
-                                cursor = len(buffer)
-                    elif sequence in {"[H", "OH", "[1~"}:  # home
-                        cursor = 0
-                    elif sequence in {"[F", "OF", "[4~"}:  # end
-                        cursor = len(buffer)
-                    previous_render = self._render(prompt, buffer, cursor, previous_render)
-                    continue
+                elif sequence in {"[H", "OH", "[1~"}:  # home
+                    cursor = 0
+                elif sequence in {"[F", "OF", "[4~"}:  # end
+                    cursor = len(buffer)
+                previous_render = self._render(prompt, buffer, cursor, previous_render)
+                continue
 
-                # printable characters
-                if key and key >= " ":
-                    buffer.insert(cursor, key)
-                    cursor += 1
-                    previous_render = self._render(prompt, buffer, cursor, previous_render)
+            # printable characters
+            if key and key >= " ":
+                buffer.insert(cursor, key)
+                cursor += 1
+                previous_render = self._render(prompt, buffer, cursor, previous_render)
 
     def _read_escape_sequence(self) -> str:
         """Read a simple ANSI escape sequence body."""
