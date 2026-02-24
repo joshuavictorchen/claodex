@@ -25,7 +25,8 @@ SHELL_MAX_LINES = 100
 SHELL_MAX_BYTES = 10 * 1024
 INTERACTIVE_COMMANDS = frozenset({"vim", "nvim", "nano", "less", "more", "top", "htop"})
 LOG_PAGE_SCROLL_LINES = 3
-SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+# gap rotates clockwise: top-right → down-right → bottom → up-left → top
+SPINNER_FRAMES = ("⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾")
 
 PAIR_CODEX = 1
 PAIR_CLAUDE = 2
@@ -324,8 +325,8 @@ class SidebarApplication:
         separator_attr = curses.A_DIM
         mode_attr = (
             self._with_optional_color(PAIR_MODE, bold=True)
-            if mode_text.startswith("collab")
-            else curses.A_DIM
+            if mode_text == "collaborative"
+            else self._with_optional_color(PAIR_SHELL)
         )
         if thinking_agent == "claude":
             status_attr = self._with_optional_color(PAIR_CLAUDE, bold=True)
@@ -646,12 +647,8 @@ def _merge_known_fields(destination: dict[str, Any], source: dict[str, Any]) -> 
 def _mode_text(metrics: dict[str, Any]) -> str:
     """Return normalized mode text for the strip."""
     mode = metrics.get("mode")
-    collab_turn = metrics.get("collab_turn")
-    collab_max = metrics.get("collab_max")
-    if mode == "collab" and isinstance(collab_turn, int) and isinstance(collab_max, int):
-        return f"collaborative {collab_turn}/{collab_max}"
-    if mode == "collab" and isinstance(collab_max, int):
-        return f"collaborative ?/{collab_max}"
+    if mode == "collab":
+        return "collaborative"
     return str(mode or "normal")
 
 

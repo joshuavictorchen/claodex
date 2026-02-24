@@ -198,7 +198,7 @@ class InputEditor:
                     previous_render = self._render(prompt, buffer, cursor, previous_render)
                     continue
                 self._clear_render(previous_render)
-                return InputEvent(kind="toggle")
+                return InputEvent(kind="toggle", value="".join(buffer))
 
             if key == "\x03" and not pasting:
                 raise KeyboardInterrupt

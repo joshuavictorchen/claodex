@@ -121,11 +121,11 @@ def test_mode_and_uptime_text_format_collab_state():
     metrics["uptime_start"] = "2026-02-24T01:00:00+00:00"
 
     now = datetime(2026, 2, 24, 1, 30, 0, tzinfo=timezone.utc)
-    assert _mode_text(metrics) == "collaborative 2/8"
+    assert _mode_text(metrics) == "collaborative"
     assert _uptime_text(metrics, now=now) == "30m00s"
 
     metrics["collab_turn"] = None
-    assert _mode_text(metrics) == "collaborative ?/8"
+    assert _mode_text(metrics) == "collaborative"
 
 
 def test_status_text_and_active_thinking_agent():
@@ -273,16 +273,16 @@ def test_render_metrics_strip_drops_optional_fields_on_narrow_width(tmp_path):
     wide = _StdScr()
     app._render_metrics_strip(wide, row=0, width=120, now=now)
     wide_line = _line_text(wide.calls)
-    assert "collaborative 2/8" in wide_line
+    assert "collaborative" in wide_line
     assert "think " in wide_line
     assert "up " in wide_line
     assert "claude:1" in wide_line
     assert "codex:1" in wide_line
 
     narrow = _StdScr()
-    app._render_metrics_strip(narrow, row=0, width=35, now=now)
+    app._render_metrics_strip(narrow, row=0, width=30, now=now)
     narrow_line = _line_text(narrow.calls)
-    assert "collaborative 2/8" in narrow_line
+    assert "collaborative" in narrow_line
     assert "think " not in narrow_line
     assert "up " not in narrow_line
     assert "claude:" not in narrow_line
@@ -311,8 +311,8 @@ def test_render_metrics_strip_spinner_uses_ascii_frames(tmp_path):
     frame_two = _StdScr()
     app._render_metrics_strip(frame_two, row=0, width=80, now=now)
 
-    assert _line_text(frame_one.calls).startswith("⠋ claude")
-    assert _line_text(frame_two.calls).startswith("⠙ claude")
+    assert _line_text(frame_one.calls).startswith("⣷ claude")
+    assert _line_text(frame_two.calls).startswith("⣯ claude")
 
 
 def test_render_log_applies_scroll_offset_and_clamps(tmp_path):

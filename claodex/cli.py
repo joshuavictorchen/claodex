@@ -605,6 +605,7 @@ class ClaodexApplication:
 
                 if event.kind == "toggle":
                     target = peer_agent(target)
+                    self._input_prefill = event.value
                     self._update_metrics(bus, target=target)
                     continue
 

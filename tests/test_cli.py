@@ -387,6 +387,48 @@ def test_run_repl_toggle_updates_metrics_target(tmp_path):
     assert seen_buses[0].closed is True
 
 
+def test_run_repl_toggle_preserves_draft_as_prefill(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_file = tmp_path / "session.jsonl"
+    session_file.write_text("", encoding="utf-8")
+    participants = _build_participants(workspace, session_file)
+    application = ClaodexApplication()
+
+    events = iter(
+        [
+            InputEvent(kind="toggle", value="in-progress draft"),
+            InputEvent(kind="quit"),
+        ]
+    )
+    prefill_snapshots: list[str] = []
+
+    def fake_read_event(target: str, on_idle=None):  # noqa: ANN001
+        _ = on_idle
+        # capture _input_prefill before _read_event would consume it
+        prefill_snapshots.append(application._input_prefill)
+        return next(events)
+
+    seen_buses: list[_BusRecorder] = []
+
+    def fake_bus(*_args, **_kwargs) -> _BusRecorder:
+        bus = _BusRecorder()
+        seen_buses.append(bus)
+        return bus
+
+    with (
+        patch("claodex.cli.UIEventBus", side_effect=fake_bus),
+        patch("claodex.cli.Router", return_value=object()),
+        patch("claodex.cli.kill_session"),
+        patch.object(application, "_read_event", side_effect=fake_read_event),
+    ):
+        application._run_repl(workspace, participants)
+
+    # first read has no prefill; after toggle, the draft is stored for next read
+    assert prefill_snapshots[0] == ""
+    assert application._input_prefill == "in-progress draft"
+
+
 def test_run_repl_collab_command_clears_terminal_line(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

@@ -155,6 +155,13 @@ def test_tab_without_paste_toggles():
     assert event.kind == "toggle"
 
 
+def test_tab_toggle_preserves_buffer_text():
+    """Tab toggle carries in-progress buffer text in event value."""
+    event = _feed_bytes(b"draft message\t")
+    assert event.kind == "toggle"
+    assert event.value == "draft message"
+
+
 def test_enter_submits_normally():
     """Enter without paste submits the buffer."""
     event = _feed_bytes(b"hello\r")
