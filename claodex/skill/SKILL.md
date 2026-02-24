@@ -62,7 +62,11 @@ clarification question rather than guessing.
 ## collab mode
 
 The user can start a multi-turn automated exchange between you and your
-peer using `/collab`. When active:
+peer using `/collab`. You can also initiate collab yourself by ending your
+message with `[COLLAB]` on its own line — the router will route your
+response to your peer and start an automated exchange.
+
+When collab is active:
 
 - Messages route directly between agents with no user intervention per turn.
 - The user watches but does not participate until collab ends or they `/halt`.

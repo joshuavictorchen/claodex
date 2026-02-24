@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from claodex.cli import _has_converge_signal, parse_collab_request
+from claodex.cli import _last_line_is, _strip_trailing_signal, parse_collab_request
+from claodex.constants import COLLAB_SIGNAL, CONVERGE_SIGNAL
 from claodex.errors import ClaodexError
 from claodex.router import PendingSend, Router, RoutingConfig, strip_injected_context
 from claodex.state import (
@@ -279,30 +280,57 @@ def test_parse_collab_request_double_dash_terminates_options():
     assert parsed.message == "--this starts with dashes"
 
 
-# -- convergence signal tests --
+# -- signal detection tests --
 
 
 def test_converge_signal_on_last_line():
-    assert _has_converge_signal("Looks good.\n\n[CONVERGED]")
+    assert _last_line_is("Looks good.\n\n[CONVERGED]", CONVERGE_SIGNAL)
 
 
 def test_converge_signal_with_trailing_whitespace():
-    assert _has_converge_signal("Done.\n[CONVERGED]  \n\n")
+    assert _last_line_is("Done.\n[CONVERGED]  \n\n", CONVERGE_SIGNAL)
 
 
 def test_converge_signal_not_triggered_by_mention():
     # agent discusses the signal mid-message — should not trigger
-    assert not _has_converge_signal(
-        "We could use [CONVERGED] to end collab.\nBut I have more to say."
+    assert not _last_line_is(
+        "We could use [CONVERGED] to end collab.\nBut I have more to say.",
+        CONVERGE_SIGNAL,
     )
 
 
 def test_converge_signal_absent():
-    assert not _has_converge_signal("I think we need another round.")
+    assert not _last_line_is("I think we need another round.", CONVERGE_SIGNAL)
 
 
 def test_converge_signal_empty_text():
-    assert not _has_converge_signal("")
+    assert not _last_line_is("", CONVERGE_SIGNAL)
+
+
+def test_collab_signal_on_last_line():
+    assert _last_line_is("I'd like a peer review.\n\n[COLLAB]", COLLAB_SIGNAL)
+
+
+def test_collab_signal_not_triggered_by_mention():
+    assert not _last_line_is(
+        "The [COLLAB] signal can be used.\nHere is my analysis.",
+        COLLAB_SIGNAL,
+    )
+
+
+def test_strip_trailing_signal_removes_last_line():
+    text = "Here is my analysis.\n\n[COLLAB]"
+    assert _strip_trailing_signal(text, COLLAB_SIGNAL) == "Here is my analysis."
+
+
+def test_strip_trailing_signal_noop_when_absent():
+    text = "No signal here."
+    assert _strip_trailing_signal(text, COLLAB_SIGNAL) == "No signal here."
+
+
+def test_strip_trailing_signal_with_trailing_blanks():
+    text = "Done.\n[CONVERGED]\n\n"
+    assert _strip_trailing_signal(text, CONVERGE_SIGNAL) == "Done."
 
 
 def test_strip_injected_context_keeps_final_user_block():
@@ -1072,3 +1100,213 @@ def test_wait_for_response_claude_interference_wrong_first_row(tmp_path):
     )
     with pytest.raises(ClaodexError, match="interference detected"):
         router.wait_for_response(pending=pending, timeout_seconds=0.5)
+
+
+# -- poll_for_response tests --
+
+
+def test_poll_for_response_returns_none_when_incomplete(tmp_path):
+    """poll_for_response returns None when the agent hasn't finished."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    # only user entry, no assistant response or turn marker
+    _write_jsonl(claude_session, _claude_entries("hello", "")[:1])
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
+    )
+
+    pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello")
+    result = router.poll_for_response(pending)
+    assert result is None
+
+
+def test_poll_for_response_returns_response_when_complete(tmp_path):
+    """poll_for_response returns ResponseTurn when the agent has finished."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    _write_jsonl(claude_session, _claude_turn_entries("hello", "world"))
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
+    )
+
+    pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello")
+    result = router.poll_for_response(pending)
+    assert result is not None
+    assert result.agent == "claude"
+    assert result.text == "world"
+
+
+def test_poll_for_response_returns_none_when_pane_dead(tmp_path):
+    """poll_for_response returns None when the agent pane is dead."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    _write_jsonl(claude_session, _claude_turn_entries("hello", "world"))
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: False,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
+    )
+
+    pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello")
+    result = router.poll_for_response(pending)
+    assert result is None
+
+
+# -- stop-event latch across polls --
+
+
+def test_poll_for_response_stop_event_latch_survives_across_polls(tmp_path):
+    """Stop event consumed on first poll is latched so second poll still detects completion."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    # user entry only — no assistant text yet, no turn_duration marker
+    _write_jsonl(claude_session, _claude_entries("hello", "")[:1])
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    # write a fake stop event to a tmp debug log
+    debug_log = tmp_path / "claude-session.txt"
+    debug_log.write_text(
+        "2026-02-22T10:00:01.000Z [DEBUG] Getting matching hook commands for Stop\n"
+    )
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
+    )
+
+    # patch the debug log path to use our tmp file
+    import claodex.router as router_module
+    original_pattern = router_module.CLAUDE_DEBUG_LOG_PATTERN
+    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace(
+        "claude-session", "{session_id}"
+    )
+    try:
+        pending = PendingSend(
+            target_agent="claude",
+            before_cursor=0,
+            sent_text="--- user ---\nhello",
+            sent_at=datetime(2026, 2, 22, 10, 0, 0, tzinfo=timezone.utc),
+        )
+
+        # first poll: stop event consumed but no assistant text → None
+        result = router.poll_for_response(pending)
+        assert result is None
+        # latch should be set
+        assert ("claude", 0) in router._poll_stop_seen
+
+        # now add assistant text
+        _write_jsonl(claude_session, _claude_entries("hello", "latched answer"))
+        write_read_cursor(workspace, "claude", 0)
+
+        # second poll: latch means stop event is still known, now text is available
+        result = router.poll_for_response(pending)
+        assert result is not None
+        assert result.text == "latched answer"
+        # latch cleaned up after success
+        assert ("claude", 0) not in router._poll_stop_seen
+    finally:
+        router_module.CLAUDE_DEBUG_LOG_PATTERN = original_pattern
+
+
+def test_poll_stop_latch_cleaned_on_marker_success(tmp_path):
+    """Latch entry is cleaned up when marker-based detection succeeds."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    _write_jsonl(claude_session, _claude_turn_entries("hello", "world"))
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
+    )
+
+    # pre-seed a latch entry to verify it gets cleaned up
+    router._poll_stop_seen.add(("claude", 0))
+
+    pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello")
+    result = router.poll_for_response(pending)
+    assert result is not None
+    assert result.text == "world"
+    # latch should be cleaned up on marker-based success
+    assert ("claude", 0) not in router._poll_stop_seen
+
+
+# -- empty [COLLAB] edge case --
+
+
+def test_strip_trailing_signal_empty_result():
+    """Stripping [COLLAB] from a message with only the signal yields empty text."""
+    result = _strip_trailing_signal("[COLLAB]", COLLAB_SIGNAL)
+    assert result == ""

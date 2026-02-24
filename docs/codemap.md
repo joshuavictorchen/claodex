@@ -1,4 +1,4 @@
-Last updated: 2026-02-23
+Last updated: 2026-02-24
 
 ## Overview
 
@@ -30,7 +30,7 @@ claodex/
 
 #### CLI (`claodex/cli.py`)
 
-- **Owns**: startup sequence, REPL loop, collab orchestration, exchange logging
+- **Owns**: startup sequence, REPL loop, collab orchestration, idle watch polling for agent-initiated collab, exchange logging
 - **Key files**: `cli.py` (all-in-one: startup, attach, REPL, collab, `/status`, `/quit`)
 - **Interface**: `main()` entry point; `parse_collab_request()` also used by tests
 - **Depends on**: router, state, extract, input_editor, tmux_ops, constants, errors
@@ -38,12 +38,12 @@ claodex/
 
 #### Router (`claodex/router.py`)
 
-- **Owns**: event extraction, delta composition, message delivery, response waiting, turn-end detection, interference detection
+- **Owns**: event extraction, delta composition, message delivery, blocking + non-blocking response waiting, turn-end detection, interference detection
 - **Key files**: `router.py` (Router class, render_block, strip_injected_context, _is_meta_user_text)
-- **Interface**: `Router.send_user_message()`, `Router.send_routed_message()`, `Router.wait_for_response()`, `render_block()`, `strip_injected_context()`
+- **Interface**: `Router.send_user_message()`, `Router.send_routed_message()`, `Router.wait_for_response()`, `Router.poll_for_response()`, `Router.clear_poll_latch()`, `render_block()`, `strip_injected_context()`
 - **Depends on**: extract, state, constants, errors; Claude debug log (`~/.claude/debug/{session_id}.txt`) as side-channel for Stop-event fallback
 - **Depended on by**: cli
-- **Invariants**: delivery cursor never exceeds peer read cursor; read cursor never moves backward; user messages are stripped of injected context before delta composition; Claude turn detection uses `turn_duration → Stop-event → timeout` priority chain; unexpected non-meta user input during collab wait triggers interference error
+- **Invariants**: delivery cursor never exceeds peer read cursor; read cursor never moves backward; user messages are stripped of injected context before delta composition; Claude turn detection uses `turn_duration → Stop-event → timeout` priority chain; poll stop-event latches are keyed by `(agent, before_cursor)` and must be cleared when a watch is discarded; unexpected non-meta user input during collab wait triggers interference error
 
 #### Extraction (`claodex/extract.py`)
 
@@ -64,12 +64,12 @@ claodex/
 
 #### Input Editor (`claodex/input_editor.py`)
 
-- **Owns**: raw-mode terminal line editor for REPL input
+- **Owns**: raw-mode terminal line editor for REPL input, idle callback scheduling, input prefill restoration
 - **Key files**: `input_editor.py` (InputEditor class, raw terminal mode context manager)
-- **Interface**: `InputEditor.read()` returns `InputEvent(kind, value)`
+- **Interface**: `InputEditor.read(target, on_idle, idle_interval, prefill)` returns `InputEvent(kind, value)`
 - **Depends on**: (stdlib only)
 - **Depended on by**: cli
-- **Invariants**: tracks visual line count (accounting for terminal wrapping) to correctly clear/redraw multi-line input
+- **Invariants**: tracks visual line count (accounting for terminal wrapping) to correctly clear/redraw multi-line input; suppresses idle callback while bracketed paste is active; when idle callback interrupts with a non-empty draft, draft text is emitted in `InputEvent.value` for caller-side restore
 
 #### tmux Ops (`claodex/tmux_ops.py`)
 
@@ -95,10 +95,11 @@ User types in CLI REPL
   → cli.py composes message (with peer delta from other agent's JSONL)
   → router.py:render_block() wraps events with --- source --- headers
   → tmux_ops.py:paste_content() injects into target pane via load-buffer/paste-buffer
+  → CLI stores a per-target pending watch for idle `[COLLAB]` detection
   → Agent processes message, writes response to its JSONL
-  → router.py:wait_for_response() polls JSONL for turn-end marker
-  → extract.py parses JSONL window into room events
-  → Response text extracted and displayed / routed to peer
+  → input_editor idle tick triggers router.py:poll_for_response()
+  → if response ends with `[COLLAB]`, CLI seeds _run_collab() and routes to peer
+  → collab loop uses router.py:wait_for_response() for blocking turn waits
 ```
 
 State on disk:
@@ -115,13 +116,14 @@ State on disk:
 | --- | --- | --- |
 | Startup / session creation | `cli.py:_run_start` | Creates tmux, launches agents, installs skills |
 | Reattach | `cli.py:_run_attach` | Resolves layout, validates panes, resumes REPL |
-| Message sending | `router.py:send_user_message` | Composes delta + user text, pastes to pane |
+| Normal message sending | `cli.py:_run_repl`, `router.py:send_user_message` | Fire-and-forget send; registers/updates one pending watch per target (superseding prior watch) |
+| Agent-initiated collab detection | `cli.py:_make_idle_callback`, `router.py:poll_for_response` | Idle poll checks pending watches for `[COLLAB]`, seeds `_run_collab` on trigger |
 | Collab mode | `cli.py:_run_collab` | Automated multi-turn; uses `Router.send_routed_message` + `wait_for_response` |
 | Response detection | `router.py:_scan_*_turn_end_marker`, `_scan_claude_debug_stop_event`, `_detect_interference` | Claude: `turn_duration` → debug-log Stop event → timeout; Codex: `task_complete` after `task_started`. Interference detection aborts on unexpected user input. |
 | JSONL extraction | `extract.py:_extract_claude_room_events`, `_extract_codex_room_events` | Agent-specific parsers |
 | Header stripping | `router.py:strip_injected_context` | Removes nested `--- source ---` blocks from forwarded user messages |
 | Registration | `skill/scripts/register.py` | Discovers session file, writes participant JSON |
-| Terminal input | `input_editor.py:InputEditor.read` | Raw-mode editor with history, Tab toggle, Ctrl+J newlines |
+| Terminal input | `input_editor.py:InputEditor.read` | Raw-mode editor with history, Tab toggle, Ctrl+J newlines, idle callback, optional prefill |
 | Adaptive paste delay | `tmux_ops.py:_submit_delay` | Scales with payload size; env override `CLAODEX_PASTE_SUBMIT_DELAY_SECONDS` |
 
 ## Invariants
@@ -131,12 +133,13 @@ State on disk:
 - **Turn boundary**: each user message flushes the pending assistant event, so only the last assistant frame per turn is extracted
 - **Stuck cursor recovery**: after 3 failed parse attempts or 10s on the same line, the cursor skips forward 1 line
 - **Pane liveness**: dead panes cause immediate `ClaodexError` on send or wait
+- **Pending watch model**: one watch per target agent; newer sends supersede older watches and clear their poll latches
 - **Skill asset deployment**: `_install_skill_assets()` copies `claodex/skill/` to `~/.claude/skills/claodex/` and `~/.codex/skills/claodex/` on every startup
 
 ## Cross-Cutting Concerns
 
 - **Error handling**: `ClaodexError` for all runtime/validation failures; caught at REPL loop level in `cli.py:_run_repl`
-- **Constants**: `claodex/constants.py` — agent names, directory paths, default timeouts
+- **Constants**: `claodex/constants.py` — agent names, directory paths, default turns/timeouts, collab/converge signals
 - **Configuration**: env vars `CLAODEX_POLL_SECONDS`, `CLAODEX_TURN_TIMEOUT_SECONDS`, `CLAODEX_PASTE_SUBMIT_DELAY_SECONDS`, `CLAODEX_CLAUDE_SKILLS_DIR`, `CLAODEX_CODEX_SKILLS_DIR`
 
 ## Conventions and Patterns
@@ -151,13 +154,13 @@ State on disk:
 
 | Symbol | Location |
 | --- | --- |
-| `ClaodexApplication` | `claodex/cli.py:67` |
-| `Router` | `claodex/router.py:73` |
+| `ClaodexApplication` | `claodex/cli.py:89` |
+| `Router` | `claodex/router.py:93` |
 | `extract_room_events_from_window` | `claodex/extract.py:193` |
 | `paste_content` | `claodex/tmux_ops.py:278` |
 | `_submit_delay` | `claodex/tmux_ops.py:240` |
-| `render_block` | `claodex/router.py:557` |
-| `strip_injected_context` | `claodex/router.py:573` |
+| `render_block` | `claodex/router.py:898` |
+| `strip_injected_context` | `claodex/router.py:914` |
 | `InputEditor` | `claodex/input_editor.py:22` |
 | `Participant` | `claodex/state.py:24` |
 | `register.py:main` | `claodex/skill/scripts/register.py:350` |
@@ -169,4 +172,6 @@ State on disk:
 - **Agent self-headers**: agents may format responses with `--- agent ---` headers despite SKILL.md instructions, causing double headers on delivery. The current mitigation is prompt-level only (SKILL.md line 25); no code-level stripping exists
 - **Codex turn detection**: requires `task_started` → `task_complete` sequence; a `task_complete` without prior `task_started` in the scan window is accepted but could match a stale marker from a previous turn
 - **Claude debug log dependency**: the Stop-event fallback reads `~/.claude/debug/{session_id}.txt`, which is undocumented and may change between Claude Code versions. Falls through to timeout if the file is missing or the format changes.
+- **Auto-collab interruption behavior**: idle-triggered `[COLLAB]` can interrupt typed drafts; drafts are restored via `InputEvent.value` + CLI prefill on next prompt.
+- **Bracketed paste interaction**: idle callback is intentionally suppressed while bracketed paste is active to avoid splitting the paste stream.
 - **Exact-width wrap boundary**: `input_editor.py` handles the terminal phantom-row case at exact column multiples by clamping cursor to the last content row; this may place the cursor one column early on some terminals

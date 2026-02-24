@@ -361,8 +361,11 @@ When the user submits a message:
 3. Paste into the target agent's pane.
 4. Advance delivery cursor.
 
-The CLI MUST NOT block waiting for the agent's response in normal mode. The
-user sends messages at their own pace and watches agent panes directly.
+The CLI MUST NOT block waiting for the agent's response after delivery.
+Instead, the CLI stores a pending-send watch for the target agent and
+returns to the prompt immediately. The input editor's idle callback polls
+pending watches; if the agent's response ends with `[COLLAB]` on its own
+line, the CLI enters collab mode automatically.
 
 ## Collaboration Mode
 
@@ -441,6 +444,18 @@ completion, the CLI MUST fail fast with an `interference detected` error and
 abort the collab turn. Meta user rows (command wrappers, system reminders,
 task notifications, continuation boilerplate) are excluded from this check.
 
+### Agent-initiated collab
+
+An agent can initiate collab by ending its response with `[COLLAB]` on its
+own line. When the CLI detects this signal after a normal send:
+
+1. The signal line is stripped from the response text.
+2. The response is routed to the peer as turn 1 of a new collab exchange.
+3. The standard collab loop continues from there.
+
+The turn budget, convergence exit, and all other collab mechanics apply
+identically to agent-initiated and user-initiated collab.
+
 ### Termination
 
 Collab mode ends when any of:
@@ -451,6 +466,7 @@ Collab mode ends when any of:
 | `/halt` or Ctrl+C | CLI stops after current turn completes |
 | Per-turn timeout (default: 300s) | CLI reports which agent timed out |
 | Agent pane exited | CLI reports which agent died |
+| Convergence (`[CONVERGED]` from both agents) | CLI reports converged |
 
 Upon termination, the CLI MUST:
 
@@ -542,6 +558,7 @@ Cursors MUST only advance, never retreat.
 # Collaboration: <initial message, first 80 chars>
 
 Started: <ISO 8601>
+Initiated by: <user | claude | codex>
 Agents: <agent_a> ↔ <agent_b>
 Rounds: <N>
 Stop reason: <turns_reached | user_halt | timeout | agent_exited | converged>
@@ -705,8 +722,8 @@ Documenting choices made under yolo authority:
    Missing markers produce a fail-fast `SMOKE SIGNAL` instead of heuristic
    fallback.
 
-5. **10 default collab turns.** Enough for substantive collaboration. Low
-   enough to prevent runaway loops. Override with `--turns`.
+5. **100 default collab turns.** High enough for free-flowing collaboration.
+   Agents can exit early via `[CONVERGED]`. Override with `--turns`.
 
 6. **Full response routing.** Collab routes the complete agent response text,
    not a summary. Per user preference and because summarization would require

@@ -26,24 +26,38 @@ class InputEditor:
         """Initialize editor state."""
         self._history: list[str] = []
 
-    def read(self, target: str) -> InputEvent:
+    def read(
+        self,
+        target: str,
+        on_idle: "Callable[[], InputEvent | None] | None" = None,
+        idle_interval: float = 0.2,
+        prefill: str = "",
+    ) -> InputEvent:
         """Read one input event.
 
         Args:
             target: Current target label shown in prompt.
+            on_idle: Optional callback invoked during idle periods (when no
+                keystrokes arrive within *idle_interval*). If it returns an
+                InputEvent, that event is yielded immediately. While inside
+                bracketed paste, idle callbacks are suppressed.
+            idle_interval: Seconds between idle callback invocations.
+            prefill: Optional text to pre-populate the input buffer with.
 
         Returns:
             InputEvent for submitted text or control action.
         """
         prompt = f"{target} ❯ "
-        buffer: list[str] = []
-        cursor = 0
+        buffer: list[str] = list(prefill)
+        cursor = len(buffer)
         history_index: int | None = None
         pasting = False
         # (total visual rows, cursor's visual row from top of render)
         previous_render = (1, 0)
 
         self._write(prompt)
+        if buffer:
+            previous_render = self._render(prompt, buffer, cursor, previous_render)
 
         with _raw_terminal_mode(sys.stdin.fileno()):
             # enable bracketed paste so the terminal wraps pasted text in
@@ -52,7 +66,8 @@ class InputEditor:
             self._write("\x1b[?2004h")
             try:
                 return self._read_loop(
-                    prompt, buffer, cursor, history_index, pasting, previous_render
+                    prompt, buffer, cursor, history_index, pasting, previous_render,
+                    on_idle=on_idle, idle_interval=idle_interval,
                 )
             finally:
                 self._write("\x1b[?2004l")
@@ -65,6 +80,8 @@ class InputEditor:
         history_index: int | None,
         pasting: bool,
         previous_render: tuple[int, int],
+        on_idle: "Callable[[], InputEvent | None] | None" = None,
+        idle_interval: float = 0.2,
     ) -> InputEvent:
         """Core input loop, split out so bracketed paste cleanup is guaranteed.
 
@@ -75,13 +92,34 @@ class InputEditor:
             history_index: Current history navigation index.
             pasting: Whether we are inside a bracketed paste.
             previous_render: Previous render state.
+            on_idle: Optional idle callback.
+            idle_interval: Seconds between idle polls.
 
         Returns:
             InputEvent for submitted text or control action.
         """
         decoder = codecs.getincrementaldecoder("utf-8")()
+        fd = sys.stdin.fileno()
         while True:
-            char = os.read(sys.stdin.fileno(), 1)
+            # use select with timeout to enable idle polling
+            ready, _, _ = select.select([sys.stdin], [], [], idle_interval)
+            if not ready:
+                # no keystroke — invoke idle callback unless we are inside
+                # bracketed paste, where early interruption can split the
+                # paste stream and corrupt the next read cycle
+                if on_idle is not None and not pasting:
+                    event = on_idle()
+                    if event is not None:
+                        # if auto-collab interrupts while the user has a
+                        # draft, stash it in event.value for later restore
+                        if buffer:
+                            self._clear_render(previous_render)
+                            self._write("\r\n")
+                            event = InputEvent(kind=event.kind, value="".join(buffer))
+                        return event
+                continue
+
+            char = os.read(fd, 1)
             if not char:
                 return InputEvent(kind="quit")
 

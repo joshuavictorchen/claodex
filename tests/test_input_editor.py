@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import os
 from unittest.mock import patch
 
@@ -63,6 +64,40 @@ def _feed_bytes(
             pasting=False,
             previous_render=(1, 0),
         )
+
+
+def _feed_read(
+    raw: bytes,
+    *,
+    prefill: str = "",
+    on_idle=None,
+) -> InputEvent:
+    """Feed raw bytes through InputEditor.read and return the event."""
+    stream = iter(raw)
+
+    def fake_read(_fd, _n):
+        try:
+            return bytes([next(stream)])
+        except StopIteration:
+            return b""
+
+    def fake_select(rlist, _w, _x, _timeout=None):
+        return rlist, [], []
+
+    editor = InputEditor()
+    noop_render = lambda *a, **kw: (1, 0)
+
+    with (
+        patch("os.read", side_effect=fake_read),
+        patch("select.select", side_effect=fake_select),
+        patch("sys.stdin") as mock_stdin,
+        patch.object(editor, "_write"),
+        patch.object(editor, "_render", side_effect=noop_render),
+        patch.object(editor, "_clear_render"),
+        patch("claodex.input_editor._raw_terminal_mode", side_effect=lambda _fd: nullcontext()),
+    ):
+        mock_stdin.fileno.return_value = FAKE_FD
+        return editor.read("test", on_idle=on_idle, prefill=prefill, idle_interval=0.01)
 
 
 # -- bracketed paste helpers --------------------------------------------------
@@ -256,3 +291,94 @@ def test_render_continuation_uses_crlf_prefix():
         )
 
     assert "\r\n... line2" in "".join(writes)
+
+
+def test_read_prefill_submits_existing_text():
+    """Prefill text is submitted when Enter is pressed immediately."""
+    event = _feed_read(b"\r", prefill="draft")
+    assert event.kind == "submit"
+    assert event.value == "draft"
+
+
+def test_idle_callback_stashes_in_progress_buffer():
+    """Idle callback returns event with draft text preserved in value."""
+    editor = InputEditor()
+    called = {"count": 0}
+
+    def on_idle():
+        called["count"] += 1
+        return InputEvent(kind="collab_initiated")
+
+    def fake_select(_r, _w, _x, _timeout=None):
+        return [], [], []
+
+    with (
+        patch("select.select", side_effect=fake_select),
+        patch("sys.stdin") as mock_stdin,
+        patch.object(editor, "_write"),
+        patch.object(editor, "_clear_render"),
+        patch.object(editor, "_render", return_value=(1, 0)),
+    ):
+        mock_stdin.fileno.return_value = FAKE_FD
+        event = editor._read_loop(
+            prompt="test > ",
+            buffer=list("draft"),
+            cursor=5,
+            history_index=None,
+            pasting=False,
+            previous_render=(1, 0),
+            on_idle=on_idle,
+            idle_interval=0.01,
+        )
+
+    assert called["count"] == 1
+    assert event.kind == "collab_initiated"
+    assert event.value == "draft"
+
+
+def test_idle_callback_suppressed_while_bracketed_paste_active():
+    """Idle callback must not fire while inside bracketed paste."""
+    editor = InputEditor()
+    idle_calls = {"count": 0}
+    select_calls = {"count": 0}
+    stream = iter(b"\x1b[201~\r")
+
+    def on_idle():
+        idle_calls["count"] += 1
+        return InputEvent(kind="collab_initiated")
+
+    def fake_select(rlist, _w, _x, _timeout=None):
+        select_calls["count"] += 1
+        if select_calls["count"] == 1:
+            return [], [], []
+        return rlist, [], []
+
+    def fake_read(_fd, _n):
+        try:
+            return bytes([next(stream)])
+        except StopIteration:
+            return b""
+
+    with (
+        patch("select.select", side_effect=fake_select),
+        patch("os.read", side_effect=fake_read),
+        patch("sys.stdin") as mock_stdin,
+        patch.object(editor, "_write"),
+        patch.object(editor, "_clear_render"),
+        patch.object(editor, "_render", return_value=(1, 0)),
+    ):
+        mock_stdin.fileno.return_value = FAKE_FD
+        event = editor._read_loop(
+            prompt="test > ",
+            buffer=list("partial"),
+            cursor=7,
+            history_index=None,
+            pasting=True,
+            previous_render=(1, 0),
+            on_idle=on_idle,
+            idle_interval=0.01,
+        )
+
+    assert idle_calls["count"] == 0
+    assert event.kind == "submit"
+    assert event.value == "partial"
