@@ -129,13 +129,18 @@ class ClaodexApplication:
         if argv and argv[0] == "attach":
             mode = "attach"
             directory_arg = argv[1] if len(argv) > 1 else "."
+        if argv and argv[0] == "sidebar":
+            mode = "sidebar"
+            directory_arg = argv[1] if len(argv) > 1 else "."
 
         workspace_root = self._resolve_workspace(Path(directory_arg))
 
         try:
             if mode == "start":
                 return self._run_start(workspace_root)
-            return self._run_attach(workspace_root)
+            if mode == "attach":
+                return self._run_attach(workspace_root)
+            return self._run_sidebar(workspace_root)
         except ClaodexError as exc:
             print(str(exc), file=sys.stderr)
             return 1
@@ -235,6 +240,13 @@ class ClaodexApplication:
             if created_session:
                 kill_session(SESSION_NAME)
             raise
+
+    @staticmethod
+    def _run_sidebar(workspace_root: Path) -> int:
+        """Run the standalone sidebar process."""
+        from .sidebar import run_sidebar
+
+        return run_sidebar(workspace_root)
 
     def _run_attach(self, workspace_root: Path) -> int:
         """Attach to existing claodex tmux session.
@@ -1199,6 +1211,7 @@ class ClaodexApplication:
         print("usage:")
         print("  python3 -m claodex [directory]")
         print("  python3 -m claodex attach [directory]")
+        print("  python3 -m claodex sidebar [directory]")
 
 
 def parse_collab_request(command_text: str, default_start: str) -> CollabRequest:

@@ -100,6 +100,19 @@ def test_bind_participants_to_layout_overrides_registered_panes(tmp_path):
     assert bound.codex.session_id == "codex-session"
 
 
+def test_run_dispatches_sidebar_mode(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / ".git").mkdir()
+
+    application = ClaodexApplication()
+    with patch.object(application, "_run_sidebar", return_value=0) as run_sidebar_mock:
+        exit_code = application.run(["sidebar", str(workspace)])
+
+    assert exit_code == 0
+    run_sidebar_mock.assert_called_once_with(workspace.resolve())
+
+
 def test_halt_listener_queues_interjection_without_halting():
     """Non-/halt input during collab is queued and does not stop collab."""
     application = ClaodexApplication()

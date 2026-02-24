@@ -80,6 +80,15 @@ claodex/
 - **Depended on by**: cli (router warnings are bridged by callback through cli)
 - **Invariants**: only persisted kinds (`sent`, `recv`, `collab`, `watch`, `error`, `system`, `status`) are accepted; every metrics write is a complete schema-valid document; metrics writes use temp file + `os.replace`; writes are protected by a lock for main-thread + halt-listener concurrency
 
+#### Sidebar (`claodex/sidebar.py`)
+
+- **Owns**: curses-based right-pane UI (metrics strip, event log tail, local shell runner)
+- **Key files**: `sidebar.py` (`SidebarApplication`, JSONL tailing, shell command execution)
+- **Interface**: `run_sidebar(workspace_root)` invoked via `claodex sidebar <workspace>`
+- **Depends on**: state (UI file paths), stdlib curses/subprocess/json
+- **Depended on by**: cli (`ClaodexApplication.run` sidebar mode dispatch)
+- **Invariants**: tolerates missing/empty/malformed UI files; persists nothing to UI event files; shell output remains sidebar-local and capped; handles resize via `KEY_RESIZE`
+
 #### tmux Ops (`claodex/tmux_ops.py`)
 
 - **Owns**: all tmux subprocess commands (session/pane lifecycle, content injection)
@@ -110,6 +119,12 @@ User types in CLI REPL
   → input_editor idle tick triggers router.py:poll_for_response()
   → if response ends with `[COLLAB]`, CLI seeds _run_collab() and routes to peer
   → collab loop uses router.py:wait_for_response() for blocking turn waits
+
+Sidebar process loop
+  → sidebar.py tails `.claodex/ui/events.jsonl` from tracked file offset
+  → sidebar.py polls `.claodex/ui/metrics.json` every ~0.5s
+  → curses render draws metrics strip + scrolling log + shell prompt
+  → shell commands run in workspace cwd; output is appended only to sidebar-local log buffer
 ```
 
 State on disk:
@@ -136,6 +151,7 @@ State on disk:
 | Registration | `skill/scripts/register.py` | Discovers session file, writes participant JSON |
 | Terminal input | `input_editor.py:InputEditor.read` | Raw-mode editor with history, Tab toggle, Ctrl+J newlines, idle callback, optional prefill |
 | Runtime output routing | `cli.py:_run_repl`, `ui.py:UIEventBus` | REPL/collab/status output emits structured events; no runtime stdout prints after REPL starts |
+| Sidebar runtime UI | `sidebar.py:SidebarApplication` | Renders metrics/log panes and executes non-interactive shell commands locally |
 | Adaptive paste delay | `tmux_ops.py:_submit_delay` | Scales with payload size; env override `CLAODEX_PASTE_SUBMIT_DELAY_SECONDS` |
 
 ## Invariants
@@ -160,7 +176,7 @@ State on disk:
 
 - Google-style docstrings on all public functions
 - `dataclass(frozen=True)` for value objects
-- Tests in `tests/test_*.py` (coverage includes `test_cli.py`, `test_input_editor.py`, `test_router.py`, `test_tmux_ops.py`, `test_ui.py`; no `test_extract.py` or `test_state.py`)
+- Tests in `tests/test_*.py` (coverage includes `test_cli.py`, `test_input_editor.py`, `test_router.py`, `test_sidebar.py`, `test_tmux_ops.py`, `test_ui.py`; no `test_extract.py` or `test_state.py`)
 - Router accepts `paste_content` and `pane_alive` as constructor callbacks (testable without tmux)
 - Registration script is standalone (no imports from core `claodex` package) so it can run inside agent skill directories
 
