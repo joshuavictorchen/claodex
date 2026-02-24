@@ -100,6 +100,7 @@ class Router:
         paste_content: Callable[[str, str], None],
         pane_alive: Callable[[str], bool],
         config: RoutingConfig,
+        warning_callback: Callable[[str], None] | None = None,
     ) -> None:
         """Initialize router.
 
@@ -109,12 +110,14 @@ class Router:
             paste_content: Callback for injecting text into a pane.
             pane_alive: Callback returning whether a pane is alive.
             config: Polling and timeout configuration.
+            warning_callback: Optional callback for non-fatal warnings.
         """
         self.workspace_root = workspace_root
         self.participants = participants
         self._paste_content = paste_content
         self._pane_alive = pane_alive
         self.config = config
+        self._warning_callback = warning_callback
         self._stuck_state: dict[str, StuckCursorState] = {}
         # byte offset into the claude debug log to avoid re-reading from the start
         self._debug_log_offset: int = 0
@@ -171,7 +174,7 @@ class Router:
                 skipped_cursor = min(cursor + 1, line_count)
                 write_read_cursor(self.workspace_root, source_agent, skipped_cursor)
                 self._stuck_state.pop(source_agent, None)
-                print(
+                self._emit_warning(
                     "warning: skipped malformed "
                     f"{source_agent} log line at {cursor + 1} after repeated parse failures"
                 )
@@ -182,8 +185,13 @@ class Router:
         write_read_cursor(self.workspace_root, source_agent, next_cursor)
         self._stuck_state.pop(source_agent, None)
         for warning in extraction["warnings"]:
-            print(warning)
+            self._emit_warning(warning)
         return next_cursor
+
+    def _emit_warning(self, message: str) -> None:
+        """Emit a non-fatal router warning."""
+        if self._warning_callback is not None:
+            self._warning_callback(message)
 
     def _extract_events_between(self, source_agent: str, start_line: int, end_line: int) -> list[dict]:
         """Extract normalized events for a line range.

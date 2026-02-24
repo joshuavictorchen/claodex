@@ -2,7 +2,7 @@ Last updated: 2026-02-24
 
 ## Overview
 
-claodex is a multi-agent tmux router that enables Claude Code and OpenAI Codex to collaborate from a single CLI. It manages a tmux session with three panes (Codex, Claude, CLI), routes messages between agents via JSONL session log parsing, and supports automated multi-turn collaboration. Python 3.12+, no external dependencies beyond tmux and the agent CLIs.
+claodex is a multi-agent tmux router that enables Claude Code and OpenAI Codex to collaborate from a single CLI. It manages a tmux session with three panes (Codex, Claude, CLI), routes messages between agents via JSONL session log parsing, and supports automated multi-turn collaboration. Runtime REPL output is emitted as structured UI events/metrics under `.claodex/ui/` for the sidebar phase. Python 3.12+, no external dependencies beyond tmux and the agent CLIs.
 
 ## Directory Structure
 
@@ -71,6 +71,15 @@ claodex/
 - **Depended on by**: cli
 - **Invariants**: tracks visual line count (accounting for terminal wrapping) to correctly clear/redraw multi-line input; suppresses idle callback while bracketed paste is active; when idle callback interrupts with a non-empty draft, draft text is emitted in `InputEvent.value` for caller-side restore
 
+#### UI Event Bus (`claodex/ui.py`)
+
+- **Owns**: structured REPL runtime output persistence (event JSONL + metrics snapshot), schema validation, thread-safe writes, atomic metrics updates
+- **Key files**: `ui.py` (`UIEventBus`, metrics schema validators)
+- **Interface**: `UIEventBus.log()`, `UIEventBus.update_metrics()`, `UIEventBus.close()`
+- **Depends on**: constants, errors
+- **Depended on by**: cli (router warnings are bridged by callback through cli)
+- **Invariants**: only persisted kinds (`sent`, `recv`, `collab`, `watch`, `error`, `system`, `status`) are accepted; every metrics write is a complete schema-valid document; metrics writes use temp file + `os.replace`; writes are protected by a lock for main-thread + halt-listener concurrency
+
 #### tmux Ops (`claodex/tmux_ops.py`)
 
 - **Owns**: all tmux subprocess commands (session/pane lifecycle, content injection)
@@ -95,6 +104,7 @@ User types in CLI REPL
   → cli.py composes message (with peer delta from other agent's JSONL)
   → router.py:render_block() wraps events with --- source --- headers
   → tmux_ops.py:paste_content() injects into target pane via load-buffer/paste-buffer
+  → cli.py emits structured runtime output to ui.py:UIEventBus
   → CLI stores a per-target pending watch for idle `[COLLAB]` detection
   → Agent processes message, writes response to its JSONL
   → input_editor idle tick triggers router.py:poll_for_response()
@@ -108,6 +118,7 @@ State on disk:
 .claodex/cursors/        ← read position in each agent's JSONL (1-indexed line number)
 .claodex/delivery/       ← what peer events have been delivered to each agent
 .claodex/exchanges/      ← collab exchange logs (markdown)
+.claodex/ui/             ← runtime UI event + metrics files (`events.jsonl`, `metrics.json`)
 ```
 
 ## Feature → Code Locations
@@ -124,6 +135,7 @@ State on disk:
 | Header stripping | `router.py:strip_injected_context` | Removes nested `--- source ---` blocks from forwarded user messages |
 | Registration | `skill/scripts/register.py` | Discovers session file, writes participant JSON |
 | Terminal input | `input_editor.py:InputEditor.read` | Raw-mode editor with history, Tab toggle, Ctrl+J newlines, idle callback, optional prefill |
+| Runtime output routing | `cli.py:_run_repl`, `ui.py:UIEventBus` | REPL/collab/status output emits structured events; no runtime stdout prints after REPL starts |
 | Adaptive paste delay | `tmux_ops.py:_submit_delay` | Scales with payload size; env override `CLAODEX_PASTE_SUBMIT_DELAY_SECONDS` |
 
 ## Invariants
@@ -134,19 +146,21 @@ State on disk:
 - **Stuck cursor recovery**: after 3 failed parse attempts or 10s on the same line, the cursor skips forward 1 line
 - **Pane liveness**: dead panes cause immediate `ClaodexError` on send or wait
 - **Pending watch model**: one watch per target agent; newer sends supersede older watches and clear their poll latches
+- **Output routing model**: after REPL starts, runtime status/errors/progress are emitted to `UIEventBus` instead of stdout
 - **Skill asset deployment**: `_install_skill_assets()` copies `claodex/skill/` to `~/.claude/skills/claodex/` and `~/.codex/skills/claodex/` on every startup
 
 ## Cross-Cutting Concerns
 
 - **Error handling**: `ClaodexError` for all runtime/validation failures; caught at REPL loop level in `cli.py:_run_repl`
 - **Constants**: `claodex/constants.py` — agent names, directory paths, default turns/timeouts, collab/converge signals
+- **UI state**: `.claodex/ui/events.jsonl` (append-only structured events) and `.claodex/ui/metrics.json` (atomic snapshot)
 - **Configuration**: env vars `CLAODEX_POLL_SECONDS`, `CLAODEX_TURN_TIMEOUT_SECONDS`, `CLAODEX_PASTE_SUBMIT_DELAY_SECONDS`, `CLAODEX_CLAUDE_SKILLS_DIR`, `CLAODEX_CODEX_SKILLS_DIR`
 
 ## Conventions and Patterns
 
 - Google-style docstrings on all public functions
 - `dataclass(frozen=True)` for value objects
-- Tests in `tests/test_*.py` (coverage is partial — `test_cli.py`, `test_input_editor.py`, `test_router.py`, `test_tmux_ops.py` exist; no `test_extract.py` or `test_state.py`)
+- Tests in `tests/test_*.py` (coverage includes `test_cli.py`, `test_input_editor.py`, `test_router.py`, `test_tmux_ops.py`, `test_ui.py`; no `test_extract.py` or `test_state.py`)
 - Router accepts `paste_content` and `pane_alive` as constructor callbacks (testable without tmux)
 - Registration script is standalone (no imports from core `claodex` package) so it can run inside agent skill directories
 

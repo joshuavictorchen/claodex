@@ -57,6 +57,7 @@ from .tmux_ops import (
     session_exists,
     start_agent_processes,
 )
+from .ui import UIEventBus
 
 
 def _last_line_is(text: str, signal: str) -> bool:
@@ -534,98 +535,121 @@ class ClaodexApplication:
                 os.getenv("CLAODEX_TURN_TIMEOUT_SECONDS", str(DEFAULT_TURN_TIMEOUT_SECONDS))
             ),
         )
-        router = Router(
-            workspace_root=workspace_root,
-            participants=participants,
-            paste_content=paste_content,
-            pane_alive=is_pane_alive,
-            config=config,
-        )
-
         target = "claude"
-        idle_callback = self._make_idle_callback(router)
-        print(
-            "claodex ready | tab toggles target | ctrl+j newline | commands: /collab, /halt, /status, /quit"
-        )
+        bus = UIEventBus(workspace_root=workspace_root, default_target=target)
+        try:
+            router = Router(
+                workspace_root=workspace_root,
+                participants=participants,
+                paste_content=paste_content,
+                pane_alive=is_pane_alive,
+                config=config,
+                warning_callback=lambda warning: self._log_event(bus, "error", warning),
+            )
 
-        while True:
-            try:
-                event = self._read_event(target, on_idle=idle_callback)
-            except KeyboardInterrupt:
-                print("\nkeyboard interrupt")
-                continue
+            idle_callback = self._make_idle_callback(router, bus=bus)
+            self._log_event(bus, "system", "claodex ready")
 
-            if event.kind == "quit":
-                print("shutting down...")
-                kill_session(SESSION_NAME)
-                print("session killed")
-                return
-
-            if event.kind == "toggle":
-                target = peer_agent(target)
-                continue
-
-            if event.kind == "collab_initiated" and self._collab_seed is not None:
-                seed_pending, seed_response = self._collab_seed
-                self._collab_seed = None
-                # preserve in-progress user input for after collab
-                if event.value:
-                    self._input_prefill = event.value
-                self._clear_watches(router)
-                peer = peer_agent(seed_response.agent)
-                request = CollabRequest(
-                    turns=DEFAULT_COLLAB_TURNS,
-                    start_agent=peer,
-                    message="",
-                )
-                print(f"\n[collab] {seed_response.agent} initiated collaboration")
-                self._run_collab(
-                    workspace_root, router, request,
-                    seed_turn=(seed_pending, seed_response),
-                )
-                continue
-
-            if event.kind != "submit":
-                continue
-
-            try:
-                text = event.value.strip()
-                if not text:
+            while True:
+                try:
+                    event = self._read_event(target, on_idle=idle_callback)
+                except KeyboardInterrupt:
+                    self._log_event(bus, "system", "keyboard interrupt")
                     continue
 
-                if text.startswith("/"):
-                    if text == "/quit":
-                        print("shutting down...")
-                        kill_session(SESSION_NAME)
-                        print("session killed")
-                        return
-                    if text == "/status":
-                        self._print_status(workspace_root, participants)
-                        continue
-                    if text == "/halt":
-                        print("no active collaboration to halt")
-                        continue
-                    if text.startswith("/collab"):
-                        request = parse_collab_request(text, default_start=target)
-                        self._clear_watches(router)
-                        self._run_collab(workspace_root, router, request)
-                        continue
-                    print(f"unknown command: {text}")
+                if event.kind == "quit":
+                    self._log_event(bus, "system", "shutting down")
+                    kill_session(SESSION_NAME)
+                    self._log_event(bus, "system", "session killed")
+                    return
+
+                if event.kind == "toggle":
+                    target = peer_agent(target)
+                    self._update_metrics(bus, target=target)
                     continue
 
-                pending = router.send_user_message(target, text)
-                print(f"[sent] -> {target}")
+                if event.kind == "collab_initiated" and self._collab_seed is not None:
+                    seed_pending, seed_response = self._collab_seed
+                    self._collab_seed = None
+                    # preserve in-progress user input for after collab
+                    if event.value:
+                        self._input_prefill = event.value
+                    self._clear_watches(router)
+                    peer = peer_agent(seed_response.agent)
+                    request = CollabRequest(
+                        turns=DEFAULT_COLLAB_TURNS,
+                        start_agent=peer,
+                        message="",
+                    )
+                    self._log_event(
+                        bus,
+                        "collab",
+                        f"{seed_response.agent} initiated collaboration",
+                        agent=seed_response.agent,
+                    )
+                    self._run_collab(
+                        workspace_root,
+                        router,
+                        request,
+                        seed_turn=(seed_pending, seed_response),
+                        bus=bus,
+                    )
+                    continue
 
-                # track for idle [COLLAB] detection; supersede warning
-                # if there was already a pending watch for this target
-                if target in self._pending_watches:
-                    old = self._pending_watches[target]
-                    router.clear_poll_latch(target, old.before_cursor)
-                    print(f"[watch] replaced pending collab watch for {target}")
-                self._pending_watches[target] = pending
-            except ClaodexError as exc:
-                print(f"error: {exc}")
-                continue
+                if event.kind != "submit":
+                    continue
+
+                try:
+                    text = event.value.strip()
+                    if not text:
+                        continue
+
+                    if text.startswith("/"):
+                        if text == "/quit":
+                            self._log_event(bus, "system", "shutting down")
+                            kill_session(SESSION_NAME)
+                            self._log_event(bus, "system", "session killed")
+                            return
+                        if text == "/status":
+                            self._emit_status(
+                                workspace_root=workspace_root,
+                                participants=participants,
+                                target=target,
+                                bus=bus,
+                            )
+                            continue
+                        if text == "/halt":
+                            self._log_event(bus, "system", "no active collaboration to halt")
+                            continue
+                        if text.startswith("/collab"):
+                            request = parse_collab_request(text, default_start=target)
+                            self._clear_watches(router)
+                            self._run_collab(
+                                workspace_root,
+                                router,
+                                request,
+                                bus=bus,
+                            )
+                            continue
+                        self._log_event(bus, "error", f"unknown command: {text}")
+                        continue
+
+                    pending = router.send_user_message(target, text)
+                    self._log_event(bus, "sent", f"-> {target}", target=target)
+                    self._mark_agent_thinking(bus, target, sent_at=pending.sent_at)
+
+                    # track for idle [COLLAB] detection; supersede warning
+                    # if there was already a pending watch for this target
+                    if target in self._pending_watches:
+                        old = self._pending_watches[target]
+                        router.clear_poll_latch(target, old.before_cursor)
+                        self._log_event(bus, "watch", f"replaced pending collab watch for {target}")
+                    self._pending_watches[target] = pending
+                except ClaodexError as exc:
+                    self._log_event(bus, "error", str(exc))
+                    continue
+        finally:
+            bus.close()
 
     def _clear_watches(self, router: Router) -> None:
         """Clear all pending watches and their poll latches."""
@@ -633,7 +657,11 @@ class ClaodexApplication:
             router.clear_poll_latch(agent, pending.before_cursor)
         self._pending_watches.clear()
 
-    def _make_idle_callback(self, router: Router) -> "Callable[[], InputEvent | None]":
+    def _make_idle_callback(
+        self,
+        router: Router,
+        bus: UIEventBus | None = None,
+    ) -> "Callable[[], InputEvent | None]":
         """Build an idle callback that polls pending watches for [COLLAB].
 
         Args:
@@ -660,7 +688,7 @@ class ClaodexApplication:
                 except ClaodexError as exc:
                     del self._pending_watches[agent]
                     router.clear_poll_latch(agent, pending.before_cursor)
-                    print(f"\n[watch] error polling {agent}: {exc}")
+                    self._log_event(bus, "watch", f"error polling {agent}: {exc}", agent=agent)
                     return None
 
                 if response is None:
@@ -668,11 +696,30 @@ class ClaodexApplication:
 
                 # agent responded — remove watch regardless of signal
                 del self._pending_watches[agent]
+                words = count_words(response.text)
+                latency = self._response_latency_seconds(pending)
+                self._mark_agent_idle(
+                    bus,
+                    response.agent,
+                    words=words,
+                    latency_seconds=latency,
+                )
+                self._log_event(
+                    bus,
+                    "recv",
+                    f"<- {response.agent} ({words} words)",
+                    agent=response.agent,
+                )
 
                 if _last_line_is(response.text, COLLAB_SIGNAL):
                     clean_text = _strip_trailing_signal(response.text, COLLAB_SIGNAL)
                     if not clean_text.strip():
-                        print(f"\n[watch] {agent} signaled [COLLAB] with no content, ignoring")
+                        self._log_event(
+                            bus,
+                            "watch",
+                            f"{agent} signaled [COLLAB] with no content, ignoring",
+                            agent=agent,
+                        )
                         return None
                     clean_response = ResponseTurn(
                         agent=response.agent,
@@ -688,7 +735,7 @@ class ClaodexApplication:
             for agent in expired:
                 pending = self._pending_watches.pop(agent)
                 router.clear_poll_latch(agent, pending.before_cursor)
-                print(f"\n[watch] expired collab watch for {agent}")
+                self._log_event(bus, "watch", f"expired collab watch for {agent}", agent=agent)
 
             return None
 
@@ -726,6 +773,7 @@ class ClaodexApplication:
         request: CollabRequest,
         *,
         seed_turn: tuple[PendingSend, ResponseTurn] | None = None,
+        bus: UIEventBus | None = None,
     ) -> None:
         """Run multi-turn automated collaboration.
 
@@ -737,9 +785,13 @@ class ClaodexApplication:
                 When provided the agent's response is routed to the peer
                 as turn 1 and the initial user-message send is skipped.
         """
-        print(
-            f"[collab] starting: target={request.start_agent} turns={request.turns}"
+        self._log_event(
+            bus,
+            "collab",
+            f"starting: target={request.start_agent} turns={request.turns}",
+            target=request.start_agent,
         )
+        self._update_metrics(bus, mode="collab", collab_turn=None, collab_max=request.turns)
         started_at = datetime.now().astimezone().replace(microsecond=0)
 
         stop_reason = "turns_reached"
@@ -754,9 +806,15 @@ class ClaodexApplication:
 
         halt_event = threading.Event()
         stop_listener = threading.Event()
+        listener_kwargs: dict[str, object] = {
+            "halt_event": halt_event,
+            "stop_event": stop_listener,
+        }
+        if bus is not None:
+            listener_kwargs["bus"] = bus
         listener = threading.Thread(
             target=self._halt_listener,
-            kwargs={"halt_event": halt_event, "stop_event": stop_listener},
+            kwargs=listener_kwargs,
             daemon=True,
         )
         listener.start()
@@ -768,8 +826,18 @@ class ClaodexApplication:
                 turns_completed = 1
                 turn_records.append(seed_turn)
                 words = count_words(seed_response.text)
-                print(
-                    f"[collab] turn 1 <- {seed_response.agent} ({words} words)"
+                self._mark_agent_idle(
+                    bus,
+                    seed_response.agent,
+                    words=words,
+                    latency_seconds=self._response_latency_seconds(seed_pending),
+                )
+                self._update_metrics(bus, collab_turn=turns_completed, collab_max=request.turns)
+                self._log_event(
+                    bus,
+                    "collab",
+                    f"turn 1 <- {seed_response.agent} ({words} words)",
+                    agent=seed_response.agent,
                 )
                 next_target = peer_agent(seed_response.agent)
                 pending = router.send_routed_message(
@@ -778,13 +846,20 @@ class ClaodexApplication:
                     response_text=seed_response.text,
                 )
                 last_active_target = next_target
-                print(f"[collab] routing -> {next_target}")
+                self._mark_agent_thinking(bus, next_target, sent_at=pending.sent_at)
+                self._log_event(bus, "collab", f"routing -> {next_target}", target=next_target)
             else:
                 pending = router.send_user_message(request.start_agent, request.message)
                 last_active_target = pending.target_agent
+                self._mark_agent_thinking(bus, pending.target_agent, sent_at=pending.sent_at)
 
             while turns_completed < request.turns:
-                print(f"[collab] turn {turns_completed + 1} -> {pending.target_agent} (waiting...)")
+                self._log_event(
+                    bus,
+                    "collab",
+                    f"turn {turns_completed + 1} -> {pending.target_agent} (waiting...)",
+                    target=pending.target_agent,
+                )
                 try:
                     response = router.wait_for_response(pending)
                 except KeyboardInterrupt:
@@ -794,8 +869,18 @@ class ClaodexApplication:
 
                 turns_completed += 1
                 words = count_words(response.text)
-                print(
-                    f"[collab] turn {turns_completed} <- {response.agent} ({words} words)"
+                self._mark_agent_idle(
+                    bus,
+                    response.agent,
+                    words=words,
+                    latency_seconds=self._response_latency_seconds(pending),
+                )
+                self._update_metrics(bus, collab_turn=turns_completed, collab_max=request.turns)
+                self._log_event(
+                    bus,
+                    "collab",
+                    f"turn {turns_completed} <- {response.agent} ({words} words)",
+                    agent=response.agent,
                 )
 
                 turn_records.append((pending, response))
@@ -828,20 +913,24 @@ class ClaodexApplication:
                     user_interjections=interjections or None,
                 )
                 last_active_target = next_target
+                self._mark_agent_thinking(bus, next_target, sent_at=pending.sent_at)
                 if interjections:
-                    print(
-                        f"[collab] routing -> {next_target}"
-                        f" (with {len(interjections)} user interjection(s))"
+                    self._log_event(
+                        bus,
+                        "collab",
+                        f"routing -> {next_target} (with {len(interjections)} user interjection(s))",
+                        target=next_target,
                     )
                 else:
-                    print(f"[collab] routing -> {next_target}")
+                    self._log_event(bus, "collab", f"routing -> {next_target}", target=next_target)
 
         except ClaodexError as exc:
             stop_reason = str(exc)
-            print(f"[collab] halted: {exc}")
+            self._log_event(bus, "collab", f"halted: {exc}")
+            self._log_event(bus, "error", str(exc))
         except KeyboardInterrupt:
             stop_reason = "user_halt"
-            print("[collab] halted by user")
+            self._log_event(bus, "collab", "halted by user")
         finally:
             stop_listener.set()
             listener.join(timeout=0.5)
@@ -850,7 +939,11 @@ class ClaodexApplication:
         # when collab stops
         remaining = _drain_queue(self._collab_interjections)
         if remaining:
-            print(f"[collab] dropped {len(remaining)} queued interjection(s)")
+            self._log_event(
+                bus,
+                "collab",
+                f"dropped {len(remaining)} queued interjection(s)",
+            )
 
         initiated_by = seed_turn[1].agent if seed_turn else "user"
         exchange_path = self._write_exchange_log(
@@ -862,17 +955,36 @@ class ClaodexApplication:
             stop_reason=stop_reason,
             initiated_by=initiated_by,
         )
-        print(
-            f"[collab] halted: {turns_completed} turns, reason={stop_reason}, exchange={exchange_path}"
+        self._log_event(
+            bus,
+            "collab",
+            f"halted: {turns_completed} turns, reason={stop_reason}, exchange={exchange_path}",
         )
-        print(f"[collab] last active target: {last_active_target}")
+        self._log_event(
+            bus,
+            "collab",
+            f"last active target: {last_active_target}",
+            target=last_active_target,
+        )
+        self._update_metrics(
+            bus,
+            mode="normal",
+            collab_turn=None,
+            collab_max=None,
+        )
 
-    def _halt_listener(self, halt_event: threading.Event, stop_event: threading.Event) -> None:
+    def _halt_listener(
+        self,
+        halt_event: threading.Event,
+        stop_event: threading.Event,
+        bus: UIEventBus | None = None,
+    ) -> None:
         """Watch stdin for `/halt` while collab mode runs.
 
         Args:
             halt_event: Set when halt is requested.
             stop_event: Set when listener should stop.
+            bus: Optional event bus for collab status events.
         """
         if not sys.stdin.isatty():
             return
@@ -889,17 +1001,86 @@ class ClaodexApplication:
                 dropped = len(_drain_queue(self._collab_interjections))
                 halt_event.set()
                 if dropped:
-                    print(
-                        "\n[collab] halt requested "
-                        f"(dropped {dropped} queued interjection(s))"
+                    self._log_event(
+                        bus,
+                        "collab",
+                        f"halt requested (dropped {dropped} queued interjection(s))",
                     )
                 else:
-                    print("\n[collab] halt requested")
+                    self._log_event(bus, "collab", "halt requested")
             elif stripped:
                 # queue for inclusion in the next routed message;
                 # collab keeps flowing
                 self._collab_interjections.put(stripped)
-                print(f"\n[collab] interjection queued")
+                self._log_event(bus, "collab", "interjection queued")
+
+    def _response_latency_seconds(self, pending: PendingSend) -> float | None:
+        """Return latency in seconds from send metadata."""
+        if pending.sent_at is None:
+            return None
+        delta = datetime.now(timezone.utc) - pending.sent_at
+        return max(0.0, delta.total_seconds())
+
+    def _mark_agent_thinking(
+        self,
+        bus: UIEventBus | None,
+        agent: str,
+        *,
+        sent_at: datetime | None = None,
+    ) -> None:
+        """Set one agent to thinking in metrics."""
+        if bus is None:
+            return
+        thinking_since = (sent_at or datetime.now(timezone.utc)).isoformat()
+        bus.update_metrics(
+            agents={
+                agent: {
+                    "status": "thinking",
+                    "thinking_since": thinking_since,
+                }
+            }
+        )
+
+    def _mark_agent_idle(
+        self,
+        bus: UIEventBus | None,
+        agent: str,
+        *,
+        words: int | None = None,
+        latency_seconds: float | None = None,
+    ) -> None:
+        """Set one agent to idle in metrics and record optional turn stats."""
+        if bus is None:
+            return
+        update: dict[str, object] = {
+            "status": "idle",
+            "thinking_since": None,
+        }
+        if words is not None:
+            update["last_words"] = words
+        update["last_latency_s"] = latency_seconds
+        bus.update_metrics(agents={agent: update})
+
+    def _update_metrics(self, bus: UIEventBus | None, **fields: object) -> None:
+        """Apply metrics updates when a bus is available."""
+        if bus is None:
+            return
+        bus.update_metrics(**fields)
+
+    def _log_event(
+        self,
+        bus: UIEventBus | None,
+        kind: str,
+        message: str,
+        *,
+        agent: str | None = None,
+        target: str | None = None,
+        meta: dict[str, object] | None = None,
+    ) -> None:
+        """Emit one UI event when a bus is available."""
+        if bus is None:
+            return
+        bus.log(kind, message, agent=agent, target=target, meta=meta)
 
     def _write_exchange_log(
         self,
@@ -973,17 +1154,40 @@ class ClaodexApplication:
         output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return output_path
 
-    def _print_status(self, workspace_root: Path, participants: SessionParticipants) -> None:
-        """Print concise runtime status."""
+    def _emit_status(
+        self,
+        workspace_root: Path,
+        participants: SessionParticipants,
+        target: str,
+        bus: UIEventBus | None,
+    ) -> None:
+        """Emit concise runtime status to the event bus."""
         snapshot = cursor_snapshot(workspace_root)
-        print("participants:")
-        print(f"  claude: pane={participants.claude.tmux_pane}  session={participants.claude.session_id}")
-        print(f"    log: {participants.claude.session_file}")
-        print(f"  codex:  pane={participants.codex.tmux_pane}  session={participants.codex.session_id}")
-        print(f"    log: {participants.codex.session_file}")
-        print("cursors:")
-        print(f"  read-claude: {snapshot['read-claude']}  read-codex: {snapshot['read-codex']}")
-        print(f"  to-claude: {snapshot['to-claude']}  to-codex: {snapshot['to-codex']}")
+        payload = {
+            "target": target,
+            "participants": {
+                "claude": {
+                    "pane": participants.claude.tmux_pane,
+                    "session_id": participants.claude.session_id,
+                    "session_file": str(participants.claude.session_file),
+                },
+                "codex": {
+                    "pane": participants.codex.tmux_pane,
+                    "session_id": participants.codex.session_id,
+                    "session_file": str(participants.codex.session_file),
+                },
+            },
+            "cursors": snapshot,
+            "pending_watches": sorted(self._pending_watches.keys()),
+            "collab_seed_agent": self._collab_seed[1].agent if self._collab_seed else None,
+        }
+        self._log_event(
+            bus,
+            "status",
+            "status snapshot",
+            target=target,
+            meta=payload,
+        )
 
     @staticmethod
     def _print_help() -> None:
