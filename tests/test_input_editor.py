@@ -294,8 +294,8 @@ def test_render_continuation_indents_to_prompt_width():
 
 
 def test_colored_prompt_uses_agent_colors():
-    assert _colored_prompt("claude") == "\033[38;5;208mclaude ❯ \033[0m"
-    assert _colored_prompt("codex") == "\033[94mcodex ❯ \033[0m"
+    assert _colored_prompt("claude") == "\033[38;5;209mclaude ❯ \033[0m"
+    assert _colored_prompt("codex") == "\033[38;5;75mcodex ❯  \033[0m"
 
 
 def test_visible_len_ignores_ansi_escape_sequences():
@@ -314,8 +314,10 @@ def test_visible_len_handles_multiple_ansi_sequences():
 
 
 def test_colored_prompt_visible_width_matches_rendered_prompt():
-    assert _visible_len(_colored_prompt("claude")) == len("claude ❯ ")
-    assert _visible_len(_colored_prompt("codex")) == len("codex ❯ ")
+    claude_width = _visible_len(_colored_prompt("claude"))
+    codex_width = _visible_len(_colored_prompt("codex"))
+    assert claude_width == len("claude ❯ ")
+    assert codex_width == claude_width
 
 
 def test_render_continuation_uses_visible_prompt_width():
@@ -329,13 +331,59 @@ def test_render_continuation_uses_visible_prompt_width():
         patch.object(editor, "_write", side_effect=writes.append),
     ):
         editor._render(
-            prompt="\033[94mcodex ❯ \033[0m",
+            prompt="\033[38;5;75mcodex ❯  \033[0m",
             buffer=list("line1\nline2"),
             cursor=len("line1\nline2"),
             previous_render=(1, 0),
         )
 
-    assert "\r\n        line2" in "".join(writes)
+    assert "\r\n         line2" in "".join(writes)
+
+
+def test_render_wrap_inserts_continuation_prefix_on_overflow():
+    """Overflow wraps onto continuation lines with prompt-width indentation."""
+    editor = InputEditor()
+    writes: list[str] = []
+
+    with (
+        patch("os.get_terminal_size", return_value=os.terminal_size((16, 24))),
+        patch.object(editor, "_move_up"),
+        patch.object(editor, "_clear_n_lines"),
+        patch.object(editor, "_write", side_effect=writes.append),
+    ):
+        render_state = editor._render(
+            prompt="test > ",
+            buffer=list("abcdefghijk"),
+            cursor=len("abcdefghijk"),
+            previous_render=(1, 0),
+        )
+
+    assert "test > abcdefghi\r\n       jk" in "".join(writes)
+    assert render_state == (2, 1)
+
+
+def test_render_exact_wrap_boundary_keeps_cursor_on_last_content_row():
+    """Cursor at end of an exact-width segment stays on the occupied row."""
+    editor = InputEditor()
+    writes: list[str] = []
+
+    with (
+        patch("os.get_terminal_size", return_value=os.terminal_size((16, 24))),
+        patch.object(editor, "_move_up"),
+        patch.object(editor, "_clear_n_lines"),
+        patch.object(editor, "_write", side_effect=writes.append),
+    ):
+        render_state = editor._render(
+            prompt="test > ",
+            buffer=list("abcdefghi"),
+            cursor=len("abcdefghi"),
+            previous_render=(1, 0),
+        )
+
+    rendered = "".join(writes)
+    assert "test > abcdefghi" in rendered
+    assert "\r\n       " not in rendered
+    assert render_state == (1, 0)
 
 
 def test_read_prefill_submits_existing_text():

@@ -17,9 +17,9 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 def _colored_prompt(target: str) -> str:
     """Return ANSI-colored prompt for the current target."""
     if target == "claude":
-        return "\033[38;5;208mclaude ❯ \033[0m"
+        return "\033[38;5;209mclaude ❯ \033[0m"
     if target == "codex":
-        return "\033[94mcodex ❯ \033[0m"
+        return "\033[38;5;75mcodex ❯  \033[0m"
     return f"{target} ❯ "
 
 
@@ -310,14 +310,23 @@ class InputEditor:
         prompt_width = _visible_len(prompt)
         continuation_prefix = " " * prompt_width
 
-        columns = os.get_terminal_size().columns
+        columns = max(1, os.get_terminal_size().columns)
+        usable_per_row = max(1, columns - prompt_width)
 
-        # count visual rows per logical line, accounting for terminal wrapping
-        visual_per_line: list[int] = []
-        for i, line in enumerate(lines):
-            prefix_len = prompt_width if i == 0 else len(continuation_prefix)
-            char_count = prefix_len + len(line)
-            visual_per_line.append(max(1, -(-char_count // columns)))
+        # split each logical line into explicit render segments so output,
+        # row counting, and cursor placement share one wrap model
+        segmented_lines: list[list[str]] = []
+        for line in lines:
+            if not line:
+                segmented_lines.append([""])
+                continue
+            segments = [
+                line[index : index + usable_per_row]
+                for index in range(0, len(line), usable_per_row)
+            ]
+            segmented_lines.append(segments)
+
+        visual_per_line = [len(segments) for segments in segmented_lines]
         visual_lines = sum(visual_per_line)
 
         # move from cursor's current visual row to render start, clear, reset
@@ -325,29 +334,33 @@ class InputEditor:
         self._clear_n_lines(prev_total)
         self._move_up(prev_total - 1)
 
-        for line_index, line in enumerate(lines):
-            if line_index == 0:
-                self._write(f"{prompt}{line}")
-            else:
-                self._write(f"\r\n{continuation_prefix}{line}")
+        for line_index, segments in enumerate(segmented_lines):
+            for segment_index, segment in enumerate(segments):
+                if line_index == 0 and segment_index == 0:
+                    self._write(f"{prompt}{segment}")
+                else:
+                    self._write(f"\r\n{continuation_prefix}{segment}")
 
-        # position cursor accounting for wrapping
-        cursor_line = text[:cursor].count("\n")
-        cursor_col_in_line = len(text[:cursor].split("\n")[-1])
-        prefix_len = prompt_width if cursor_line == 0 else len(continuation_prefix)
-        absolute_col = prefix_len + cursor_col_in_line
-
-        # visual row and column of the cursor within the full render;
-        # at exact wrap boundaries (absolute_col % columns == 0) the terminal
-        # places the cursor at column 0 of the next row, but our visual_per_line
-        # doesn't count that phantom row — keep cursor on the last content row
-        cursor_visual_row = sum(visual_per_line[:cursor_line])
-        if absolute_col > 0 and absolute_col % columns == 0:
-            cursor_visual_row += absolute_col // columns - 1
-            cursor_column = columns
+        # position cursor using the same explicit segment model
+        before_cursor = text[:cursor]
+        cursor_line = before_cursor.count("\n")
+        cursor_col_in_line = len(before_cursor.split("\n")[-1])
+        cursor_line_length = len(lines[cursor_line])
+        cursor_segments = segmented_lines[cursor_line]
+        if (
+            cursor_col_in_line == cursor_line_length
+            and cursor_col_in_line > 0
+            and cursor_col_in_line % usable_per_row == 0
+        ):
+            # keep boundary-at-end positions on the last occupied row
+            cursor_segment_index = len(cursor_segments) - 1
+            cursor_segment_col = usable_per_row
         else:
-            cursor_visual_row += absolute_col // columns
-            cursor_column = absolute_col % columns
+            cursor_segment_index = cursor_col_in_line // usable_per_row
+            cursor_segment_col = cursor_col_in_line % usable_per_row
+
+        cursor_visual_row = sum(visual_per_line[:cursor_line]) + cursor_segment_index
+        cursor_column = prompt_width + cursor_segment_col
 
         # move up from the last visual row to the cursor's visual row
         rows_up = (visual_lines - 1) - cursor_visual_row

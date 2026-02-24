@@ -106,8 +106,9 @@ class SidebarApplication:
         try:
             curses.start_color()
             curses.use_default_colors()
-            claude_color = 208 if curses.COLORS >= 256 else curses.COLOR_YELLOW
-            curses.init_pair(PAIR_CODEX, curses.COLOR_BLUE, -1)
+            codex_color = 75 if curses.COLORS >= 256 else curses.COLOR_BLUE
+            claude_color = 209 if curses.COLORS >= 256 else curses.COLOR_YELLOW
+            curses.init_pair(PAIR_CODEX, codex_color, -1)
             curses.init_pair(PAIR_CLAUDE, claude_color, -1)
             curses.init_pair(PAIR_ERROR, curses.COLOR_RED, -1)
             curses.init_pair(PAIR_SHELL, curses.COLOR_CYAN, -1)
@@ -236,7 +237,7 @@ class SidebarApplication:
         """Append one shell-local log entry."""
         self._entries.append(
             LogEntry(
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now().astimezone(),
                 kind="shell",
                 message=message,
             )
@@ -250,7 +251,7 @@ class SidebarApplication:
             stdscr.refresh()
             return
 
-        metrics_lines = _format_metrics_lines(self._metrics, now=datetime.now(timezone.utc))
+        metrics_lines = _format_metrics_lines(self._metrics, now=datetime.now().astimezone())
         metrics_height = min(3, max(1, height - 2))
         for row in range(min(metrics_height, len(metrics_lines), height)):
             self._draw_line(stdscr, row, metrics_lines[row], width, curses.A_BOLD if row == 0 else 0)
@@ -308,18 +309,22 @@ class SidebarApplication:
         """Build wrapped render lines from log entries."""
         wrapped: list[tuple[str, int]] = []
         for entry in self._entries:
-            timestamp = entry.timestamp.strftime("%H:%M:%S")
-            base_line = f"{timestamp} [{entry.kind}] {entry.message}"
+            timestamp = entry.timestamp.astimezone().strftime("%H:%M:%S")
+            kind_block = f"[{entry.kind:>6}]"
+            prefix = f"{timestamp} {kind_block} "
             chunks = textwrap.wrap(
-                base_line,
-                width=max(1, width),
+                entry.message,
+                width=max(1, width - len(prefix)),
                 replace_whitespace=False,
                 drop_whitespace=False,
             )
             if not chunks:
                 chunks = [""]
             attr = self._entry_attr(entry)
-            wrapped.extend((chunk, attr) for chunk in chunks)
+            wrapped.append((f"{prefix}{chunks[0]}", attr))
+            continuation_prefix = " " * len(prefix)
+            for chunk in chunks[1:]:
+                wrapped.append((f"{continuation_prefix}{chunk}", attr))
         return wrapped
 
     def _entry_attr(self, entry: LogEntry) -> int:

@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 
 from claodex.sidebar import (
+    LogEntry,
     SidebarApplication,
     _as_text,
     _collect_capped_output,
@@ -156,3 +157,32 @@ def test_read_event_lines_handles_partial_fragment_reassembly(tmp_path):
     with app._events_path.open("a", encoding="utf-8") as handle:
         handle.write("\nthree\n")
     assert app._read_event_lines() == ["two", "three"]
+
+
+def test_wrapped_log_lines_aligns_kind_and_continuation(tmp_path):
+    workspace = tmp_path / "workspace"
+    app = SidebarApplication(workspace)
+    entry = LogEntry(
+        timestamp=datetime(2026, 2, 24, 1, 30, 0, tzinfo=timezone.utc),
+        kind="sent",
+        message="alpha beta gamma delta",
+    )
+    app._entries.append(entry)
+
+    wrapped = app._wrapped_log_lines(width=24)
+    prefix = f"{entry.timestamp.astimezone().strftime('%H:%M:%S')} [  sent] "
+
+    assert wrapped[0][0].startswith(prefix)
+    assert len(wrapped) > 1
+    assert wrapped[1][0].startswith(" " * len(prefix))
+
+
+def test_append_shell_entry_uses_timezone_aware_local_timestamp(tmp_path):
+    workspace = tmp_path / "workspace"
+    app = SidebarApplication(workspace)
+    app._append_shell_entry("echo hello")
+
+    entry = app._entries[-1]
+    assert entry.kind == "shell"
+    assert entry.timestamp.tzinfo is not None
+    assert entry.timestamp.utcoffset() is not None
