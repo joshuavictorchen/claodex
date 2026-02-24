@@ -17,6 +17,9 @@ from .constants import (
     PARTICIPANTS_DIR,
     READ_CURSOR_FILES,
     STATE_DIR,
+    UI_DIR,
+    UI_EVENTS_FILE,
+    UI_METRICS_FILE,
 )
 from .errors import ClaodexError
 
@@ -109,6 +112,28 @@ def inbox_dir(workspace_root: Path) -> Path:
     return workspace_root / INBOX_DIR
 
 
+def ui_dir(workspace_root: Path) -> Path:
+    """Return UI state directory."""
+    return workspace_root / UI_DIR
+
+
+def ui_events_file(workspace_root: Path) -> Path:
+    """Return persisted UI events JSONL file path."""
+    return workspace_root / UI_EVENTS_FILE
+
+
+def ui_metrics_file(workspace_root: Path) -> Path:
+    """Return persisted UI metrics snapshot file path."""
+    return workspace_root / UI_METRICS_FILE
+
+
+def clear_ui_state_files(workspace_root: Path) -> None:
+    """Remove persisted UI files for a fresh session start."""
+    for path in (ui_events_file(workspace_root), ui_metrics_file(workspace_root)):
+        if path.exists():
+            path.unlink()
+
+
 def ensure_state_layout(workspace_root: Path) -> None:
     """Ensure all runtime state directories exist.
 
@@ -122,6 +147,7 @@ def ensure_state_layout(workspace_root: Path) -> None:
         DELIVERY_DIR,
         EXCHANGES_DIR,
         INBOX_DIR,
+        UI_DIR,
     ):
         (workspace_root / relative_dir).mkdir(parents=True, exist_ok=True)
 

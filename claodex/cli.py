@@ -30,6 +30,7 @@ from .router import PendingSend, ResponseTurn, Router, RoutingConfig, count_word
 from .state import (
     Participant,
     SessionParticipants,
+    clear_ui_state_files,
     cursor_snapshot,
     delivery_cursor_file,
     ensure_gitignore_entry,
@@ -441,6 +442,7 @@ class ClaodexApplication:
             path = delivery_cursor_file(workspace_root, target)
             if path.exists():
                 path.unlink()
+        clear_ui_state_files(workspace_root)
 
     def _wait_for_registration(self, workspace_root: Path) -> SessionParticipants:
         """Wait for both agents to complete registration.

@@ -10,6 +10,9 @@ CURSORS_DIR = STATE_DIR / "cursors"
 DELIVERY_DIR = STATE_DIR / "delivery"
 EXCHANGES_DIR = STATE_DIR / "exchanges"
 INBOX_DIR = STATE_DIR / "inbox"
+UI_DIR = STATE_DIR / "ui"
+UI_EVENTS_FILE = UI_DIR / "events.jsonl"
+UI_METRICS_FILE = UI_DIR / "metrics.json"
 
 READ_CURSOR_FILES = {
     "claude": CURSORS_DIR / "read-claude.cursor",

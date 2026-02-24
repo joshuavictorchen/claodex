@@ -12,6 +12,8 @@ from claodex.state import (
     delivery_cursor_file,
     participant_file,
     read_cursor_file,
+    ui_events_file,
+    ui_metrics_file,
 )
 from claodex.tmux_ops import PaneLayout
 
@@ -34,6 +36,14 @@ def test_clear_session_state_removes_stale_entries(tmp_path):
         dpath.parent.mkdir(parents=True, exist_ok=True)
         dpath.write_text("100", encoding="utf-8")
 
+    events_file = ui_events_file(workspace)
+    events_file.parent.mkdir(parents=True, exist_ok=True)
+    events_file.write_text("{\"kind\":\"system\"}\n", encoding="utf-8")
+
+    metrics_file = ui_metrics_file(workspace)
+    metrics_file.parent.mkdir(parents=True, exist_ok=True)
+    metrics_file.write_text("{\"mode\":\"normal\"}\n", encoding="utf-8")
+
     application = ClaodexApplication()
     application._clear_session_state(workspace)
 
@@ -41,6 +51,8 @@ def test_clear_session_state_removes_stale_entries(tmp_path):
         assert not participant_file(workspace, agent).exists()
         assert not read_cursor_file(workspace, agent).exists()
         assert not delivery_cursor_file(workspace, agent).exists()
+    assert not events_file.exists()
+    assert not metrics_file.exists()
 
 
 def test_clear_session_state_noop_when_no_files(tmp_path):
