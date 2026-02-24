@@ -119,6 +119,13 @@ def test_create_session_uses_four_pane_split_sequence(monkeypatch):
     def fake_run_tmux(args: list[str], **kwargs):
         _ = kwargs
         calls.append(args)
+        if args[:2] == ["list-panes", "-t"]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="%1\t0\n%2\t30\n",
+                stderr="",
+            )
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("claodex.tmux_ops.session_exists", fake_session_exists)
@@ -153,9 +160,32 @@ def test_create_session_uses_four_pane_split_sequence(monkeypatch):
             "-c",
             "/workspace",
         ],
-        ["split-window", "-h", "-t", "claodex:0.0", "-c", "/workspace"],
-        ["split-window", "-h", "-t", "claodex:0.1", "-l", "40%", "-c", "/workspace"],
+        ["list-panes", "-t", "claodex:0", "-F", "#{pane_id}\t#{pane_top}"],
+        ["split-window", "-h", "-t", "%1", "-c", "/workspace"],
+        ["split-window", "-h", "-t", "%2", "-l", "40%", "-c", "/workspace"],
     ]
+
+
+def test_create_session_requires_two_panes_after_initial_split(monkeypatch):
+    def fake_session_exists(_session_name: str = "claodex") -> bool:
+        return False
+
+    def fake_run_tmux(args: list[str], **kwargs):
+        _ = kwargs
+        if args[:2] == ["list-panes", "-t"]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="%1\t0\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("claodex.tmux_ops.session_exists", fake_session_exists)
+    monkeypatch.setattr("claodex.tmux_ops._run_tmux", fake_run_tmux)
+
+    with pytest.raises(ClaodexError, match="expected 2 panes after initial split"):
+        create_session(Path("/workspace"), session_name="claodex")
 
 
 def test_resolve_layout_maps_top_and_bottom_rows(monkeypatch):

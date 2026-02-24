@@ -117,15 +117,49 @@ def create_session(workspace_root: Path, session_name: str = SESSION_NAME) -> Pa
         ]
     )
 
+    # resolve top/bottom pane ids after the initial vertical split so
+    # later horizontal splits target stable pane ids instead of unstable
+    # pane indexes.
+    pane_rows = _run_tmux(
+        [
+            "list-panes",
+            "-t",
+            f"{session_name}:0",
+            "-F",
+            "#{pane_id}\t#{pane_top}",
+        ]
+    ).stdout.splitlines()
+    if len(pane_rows) != 2:
+        raise ClaodexError(
+            f"expected 2 panes after initial split in session '{session_name}', found {len(pane_rows)}"
+        )
+
+    top_pane_id = ""
+    bottom_pane_id = ""
+    top_position: int | None = None
+    bottom_position: int | None = None
+    for row in pane_rows:
+        pane_id, pane_top = row.split("\t")
+        top_value = int(pane_top)
+        if top_position is None or top_value < top_position:
+            top_position = top_value
+            top_pane_id = pane_id
+        if bottom_position is None or top_value > bottom_position:
+            bottom_position = top_value
+            bottom_pane_id = pane_id
+
+    if top_pane_id == bottom_pane_id:
+        raise ClaodexError(f"could not resolve top/bottom panes in session '{session_name}'")
+
     # split top row into left/right panes
-    _run_tmux(["split-window", "-h", "-t", f"{session_name}:0.0", "-c", str(workspace_root)])
+    _run_tmux(["split-window", "-h", "-t", top_pane_id, "-c", str(workspace_root)])
     # split bottom row into input/sidebar (left 60% / right 40%)
     _run_tmux(
         [
             "split-window",
             "-h",
             "-t",
-            f"{session_name}:0.1",
+            bottom_pane_id,
             "-l",
             "40%",
             "-c",
