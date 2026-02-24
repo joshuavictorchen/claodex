@@ -1,4 +1,4 @@
-Last updated: 2026-02-24
+Last updated: 2026-02-24 (rev2)
 
 ## Overview
 
@@ -176,7 +176,7 @@ State on disk:
 
 - Google-style docstrings on all public functions
 - `dataclass(frozen=True)` for value objects
-- Tests in `tests/test_*.py` (coverage includes `test_cli.py`, `test_input_editor.py`, `test_router.py`, `test_sidebar.py`, `test_tmux_ops.py`, `test_ui.py`; no `test_extract.py` or `test_state.py`)
+- Tests in `tests/test_*.py` (164 tests across `test_cli.py`, `test_input_editor.py`, `test_router.py`, `test_sidebar.py`, `test_tmux_ops.py`, `test_ui.py`; no `test_extract.py` or `test_state.py`)
 - Router accepts `paste_content` and `pane_alive` as constructor callbacks (testable without tmux)
 - Registration script is standalone (no imports from core `claodex` package) so it can run inside agent skill directories
 
@@ -184,17 +184,17 @@ State on disk:
 
 | Symbol | Location |
 | --- | --- |
-| `ClaodexApplication` | `claodex/cli.py:89` |
+| `ClaodexApplication` | `claodex/cli.py:103` |
 | `Router` | `claodex/router.py:93` |
 | `extract_room_events_from_window` | `claodex/extract.py:193` |
-| `paste_content` | `claodex/tmux_ops.py:278` |
-| `_submit_delay` | `claodex/tmux_ops.py:240` |
-| `render_block` | `claodex/router.py:898` |
-| `strip_injected_context` | `claodex/router.py:914` |
-| `InputEditor` | `claodex/input_editor.py:22` |
-| `Participant` | `claodex/state.py:24` |
+| `paste_content` | `claodex/tmux_ops.py:348` |
+| `_submit_delay` | `claodex/tmux_ops.py:312` |
+| `render_block` | `claodex/router.py:919` |
+| `strip_injected_context` | `claodex/router.py:935` |
+| `InputEditor` | `claodex/input_editor.py:71` |
+| `Participant` | `claodex/state.py:28` |
 | `register.py:main` | `claodex/skill/scripts/register.py:350` |
-| `HEADER_LINE_PATTERN` | `claodex/router.py:27` |
+| `HEADER_LINE_PATTERN` | `claodex/router.py:46` |
 
 ## Known Gotchas
 
