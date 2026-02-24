@@ -303,6 +303,21 @@ def test_visible_len_ignores_ansi_escape_sequences():
     assert _visible_len(prompt) == len("claude ❯ ")
 
 
+def test_visible_len_handles_empty_and_plain_strings():
+    assert _visible_len("") == 0
+    assert _visible_len("plain text") == len("plain text")
+
+
+def test_visible_len_handles_multiple_ansi_sequences():
+    value = "\033[31mred\033[0m and \033[94mblue\033[0m"
+    assert _visible_len(value) == len("red and blue")
+
+
+def test_colored_prompt_visible_width_matches_rendered_prompt():
+    assert _visible_len(_colored_prompt("claude")) == len("claude ❯ ")
+    assert _visible_len(_colored_prompt("codex")) == len("codex ❯ ")
+
+
 def test_render_continuation_uses_visible_prompt_width():
     editor = InputEditor()
     writes: list[str] = []

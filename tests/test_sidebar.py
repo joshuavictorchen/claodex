@@ -4,11 +4,15 @@ import json
 from datetime import datetime, timezone
 
 from claodex.sidebar import (
+    SidebarApplication,
+    _as_text,
     _collect_capped_output,
     _default_metrics_snapshot,
+    _format_elapsed,
     _format_metrics_lines,
     _load_metrics_snapshot,
     _looks_interactive_command,
+    _parse_iso8601,
     _parse_event_line,
 )
 
@@ -121,3 +125,34 @@ def test_format_metrics_lines_includes_collab_and_uptime():
     assert "uptime: 30m00s" in lines[0]
     assert "claude: thinking 10s" in lines[1]
     assert "last: claude 320w 2.4s" in lines[2]
+
+
+def test_format_elapsed_handles_boundary_and_large_values():
+    assert _format_elapsed(0) == "0s"
+    assert _format_elapsed(3600) == "1h00m"
+    assert _format_elapsed(36610) == "10h10m"
+
+
+def test_as_text_handles_none_bytes_and_string():
+    assert _as_text(None) == ""
+    assert _as_text(b"hello") == "hello"
+    assert _as_text("already text") == "already text"
+
+
+def test_parse_iso8601_accepts_timezone_and_rejects_invalid_values():
+    assert _parse_iso8601("2026-02-24T01:30:00+00:00") is not None
+    assert _parse_iso8601("not-a-timestamp") is None
+    assert _parse_iso8601("2026-02-24T01:30:00") is None
+
+
+def test_read_event_lines_handles_partial_fragment_reassembly(tmp_path):
+    workspace = tmp_path / "workspace"
+    app = SidebarApplication(workspace)
+    app._events_path.parent.mkdir(parents=True, exist_ok=True)
+
+    app._events_path.write_text("one\ntwo", encoding="utf-8")
+    assert app._read_event_lines() == ["one"]
+
+    with app._events_path.open("a", encoding="utf-8") as handle:
+        handle.write("\nthree\n")
+    assert app._read_event_lines() == ["two", "three"]

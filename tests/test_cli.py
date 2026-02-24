@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import ast
 from datetime import datetime, timezone
+import inspect
+from pathlib import Path
 import threading
 from unittest.mock import patch
 
 import pytest
 
+import claodex.cli as cli_module
 from claodex.cli import ClaodexApplication, CollabRequest, _drain_queue
 from claodex.errors import ClaodexError
+from claodex.input_editor import InputEvent
 from claodex.router import PendingSend, ResponseTurn
 from claodex.state import (
     Participant,
@@ -19,6 +24,62 @@ from claodex.state import (
     ui_metrics_file,
 )
 from claodex.tmux_ops import PaneLayout
+
+
+def _build_participants(workspace: Path, session_file: Path) -> SessionParticipants:
+    """Build deterministic participant fixtures for REPL tests."""
+    return SessionParticipants(
+        claude=Participant(
+            agent="claude",
+            session_file=session_file,
+            session_id="claude-session",
+            tmux_pane="%1",
+            cwd=workspace,
+            registered_at="2026-02-23T00:00:00-05:00",
+        ),
+        codex=Participant(
+            agent="codex",
+            session_file=session_file,
+            session_id="codex-session",
+            tmux_pane="%2",
+            cwd=workspace,
+            registered_at="2026-02-23T00:00:00-05:00",
+        ),
+    )
+
+
+class _BusRecorder:
+    """Captures UI bus calls for assertions."""
+
+    def __init__(self) -> None:
+        self.events: list[dict[str, object]] = []
+        self.metric_updates: list[dict[str, object]] = []
+        self.closed = False
+
+    def log(
+        self,
+        kind: str,
+        message: str,
+        *,
+        agent: str | None = None,
+        target: str | None = None,
+        meta: dict[str, object] | None = None,
+    ) -> None:
+        self.events.append(
+            {
+                "kind": kind,
+                "message": message,
+                "agent": agent,
+                "target": target,
+                "meta": meta,
+            }
+        )
+
+    def update_metrics(self, **fields: object) -> None:
+        self.metric_updates.append(fields)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def test_clear_session_state_removes_stale_entries(tmp_path):
@@ -157,6 +218,130 @@ def test_ensure_sidebar_running_raises_for_dead_pane(tmp_path):
     with patch("claodex.cli.is_pane_alive", return_value=False):
         with pytest.raises(ClaodexError, match="sidebar pane is not alive: %3"):
             application._ensure_sidebar_running(layout, workspace)
+
+
+def test_runtime_repl_methods_do_not_call_print():
+    source = inspect.getsource(cli_module.ClaodexApplication)
+    tree = ast.parse(source)
+    class_node = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "ClaodexApplication"
+    )
+    methods = {
+        node.name: node
+        for node in class_node.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    runtime_methods = {
+        "_run_repl",
+        "_clear_watches",
+        "_make_idle_callback",
+        "_read_event",
+        "_run_collab",
+        "_halt_listener",
+        "_response_latency_seconds",
+        "_mark_agent_thinking",
+        "_mark_agent_idle",
+        "_update_metrics",
+        "_log_event",
+        "_write_exchange_log",
+        "_emit_status",
+    }
+
+    for method_name in runtime_methods:
+        method = methods[method_name]
+        print_calls = [
+            call
+            for call in ast.walk(method)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "print"
+        ]
+        assert not print_calls, f"{method_name} contains print()"
+
+
+def test_run_repl_status_command_emits_status_event(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_file = tmp_path / "session.jsonl"
+    session_file.write_text("", encoding="utf-8")
+    participants = _build_participants(workspace, session_file)
+    application = ClaodexApplication()
+
+    events = iter(
+        [
+            InputEvent(kind="submit", value="/status"),
+            InputEvent(kind="quit"),
+        ]
+    )
+    seen_buses: list[_BusRecorder] = []
+
+    def fake_bus(*_args, **_kwargs) -> _BusRecorder:
+        bus = _BusRecorder()
+        seen_buses.append(bus)
+        return bus
+
+    def fake_read_event(_target: str, on_idle=None):  # noqa: ANN001
+        _ = on_idle
+        return next(events)
+
+    with (
+        patch("claodex.cli.UIEventBus", side_effect=fake_bus),
+        patch("claodex.cli.Router", return_value=object()),
+        patch("claodex.cli.kill_session"),
+        patch.object(application, "_read_event", side_effect=fake_read_event),
+    ):
+        application._run_repl(workspace, participants)
+
+    assert len(seen_buses) == 1
+    status_events = [event for event in seen_buses[0].events if event["kind"] == "status"]
+    assert len(status_events) == 1
+    assert status_events[0]["message"] == "status snapshot"
+    assert status_events[0]["target"] == "claude"
+    assert isinstance(status_events[0]["meta"], dict)
+    assert seen_buses[0].closed is True
+
+
+def test_run_repl_toggle_updates_metrics_target(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_file = tmp_path / "session.jsonl"
+    session_file.write_text("", encoding="utf-8")
+    participants = _build_participants(workspace, session_file)
+    application = ClaodexApplication()
+
+    events = iter(
+        [
+            InputEvent(kind="toggle"),
+            InputEvent(kind="quit"),
+        ]
+    )
+    seen_targets: list[str] = []
+    seen_buses: list[_BusRecorder] = []
+
+    def fake_bus(*_args, **_kwargs) -> _BusRecorder:
+        bus = _BusRecorder()
+        seen_buses.append(bus)
+        return bus
+
+    def fake_read_event(target: str, on_idle=None):  # noqa: ANN001
+        _ = on_idle
+        seen_targets.append(target)
+        return next(events)
+
+    with (
+        patch("claodex.cli.UIEventBus", side_effect=fake_bus),
+        patch("claodex.cli.Router", return_value=object()),
+        patch("claodex.cli.kill_session"),
+        patch.object(application, "_read_event", side_effect=fake_read_event),
+    ):
+        application._run_repl(workspace, participants)
+
+    assert seen_targets == ["claude", "codex"]
+    assert len(seen_buses) == 1
+    assert {"target": "codex"} in seen_buses[0].metric_updates
+    assert seen_buses[0].closed is True
 
 
 def test_halt_listener_queues_interjection_without_halting():

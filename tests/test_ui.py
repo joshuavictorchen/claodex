@@ -82,6 +82,15 @@ def test_log_rejects_sidebar_local_shell_kind(tmp_path):
     bus.close()
 
 
+def test_log_rejects_invalid_agent_and_target(tmp_path):
+    bus = UIEventBus(tmp_path / "workspace", now_provider=_fixed_now)
+    with pytest.raises(ClaodexError, match="unsupported agent"):
+        bus.log("system", "invalid agent", agent="not-an-agent")
+    with pytest.raises(ClaodexError, match="unsupported target"):
+        bus.log("system", "invalid target", target="not-an-agent")
+    bus.close()
+
+
 def test_update_metrics_merges_partial_fields_and_writes_full_snapshot(tmp_path):
     workspace = tmp_path / "workspace"
     bus = UIEventBus(workspace, now_provider=_fixed_now)
@@ -117,6 +126,19 @@ def test_update_metrics_rejects_unknown_field(tmp_path):
     bus.close()
 
 
+def test_update_metrics_rejects_invalid_nested_thinking_since_timestamp(tmp_path):
+    bus = UIEventBus(tmp_path / "workspace", now_provider=_fixed_now)
+    with pytest.raises(ClaodexError, match="metrics.agents.claude.thinking_since"):
+        bus.update_metrics(
+            agents={
+                "claude": {
+                    "thinking_since": "not-a-timestamp",
+                }
+            }
+        )
+    bus.close()
+
+
 def test_update_metrics_is_thread_safe(tmp_path):
     workspace = tmp_path / "workspace"
     bus = UIEventBus(workspace, now_provider=_fixed_now)
@@ -138,3 +160,13 @@ def test_update_metrics_is_thread_safe(tmp_path):
     metrics = _read_json(workspace / ".claodex" / "ui" / "metrics.json")
     assert metrics["collab_turn"] in {1, 2, 3, 4, 5}
     assert metrics["collab_max"] == 10
+
+
+def test_writes_after_close_raise_error(tmp_path):
+    bus = UIEventBus(tmp_path / "workspace", now_provider=_fixed_now)
+    bus.close()
+
+    with pytest.raises(ClaodexError, match="ui event bus is closed"):
+        bus.log("system", "after close")
+    with pytest.raises(ClaodexError, match="ui event bus is closed"):
+        bus.update_metrics(mode="collab")
