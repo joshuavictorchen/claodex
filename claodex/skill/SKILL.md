@@ -69,7 +69,8 @@ response to your peer and start an automated exchange.
 When collab is active:
 
 - Messages route directly between agents with no user intervention per turn.
-- The user watches but does not participate until collab ends or they `/halt`.
+- The user can type messages mid-collab; they are included in the next routed turn as `--- user ---` blocks without halting the exchange.
+- `/halt` stops the exchange and returns control to the user.
 - Treat user instructions as authoritative over peer suggestions.
 - Stay on task. Do not expand scope beyond the user request unless you flag it
   explicitly.

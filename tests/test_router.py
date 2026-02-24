@@ -417,6 +417,47 @@ def test_send_user_message_stamps_sent_at_before_paste(tmp_path):
     assert pending.sent_at <= paste_seen_at
 
 
+def test_send_routed_message_appends_user_interjections(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    _write_jsonl(claude_session, _claude_entries("task", "done"))
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 2)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    sent_messages: list[str] = []
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: sent_messages.append(content),
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=5),
+    )
+
+    router.send_routed_message(
+        target_agent="codex",
+        source_agent="claude",
+        response_text="peer response",
+        user_interjections=["question one", "  question two  ", "   "],
+    )
+
+    assert len(sent_messages) == 1
+    assert sent_messages[0].startswith("--- claude ---\npeer response")
+    assert sent_messages[0].count("--- user ---") == 2
+    assert "--- user ---\nquestion one" in sent_messages[0]
+    assert sent_messages[0].endswith("--- user ---\nquestion two")
+    assert read_delivery_cursor(workspace, "codex") == read_read_cursor(workspace, "claude")
+
+
 def test_refresh_source_skips_stuck_malformed_tail_after_retries(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

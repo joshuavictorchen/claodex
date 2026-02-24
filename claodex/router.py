@@ -303,13 +303,22 @@ class Router:
             sent_at=sent_at,
         )
 
-    def send_routed_message(self, target_agent: str, source_agent: str, response_text: str) -> PendingSend:
+    def send_routed_message(
+        self,
+        target_agent: str,
+        source_agent: str,
+        response_text: str,
+        user_interjections: list[str] | None = None,
+    ) -> PendingSend:
         """Send one routed collab message from a peer agent.
 
         Args:
             target_agent: Recipient agent.
             source_agent: Source agent whose response is being routed.
             response_text: Source response text.
+            user_interjections: Optional user messages to append after
+                the peer response. Each becomes a separate ``--- user ---``
+                block in the payload.
 
         Returns:
             PendingSend metadata for waiting on target response.
@@ -320,6 +329,10 @@ class Router:
 
         before_cursor = self.refresh_source(target_agent)
         payload = render_block(source_agent, response_text)
+        for text in user_interjections or ():
+            text = text.strip()
+            if text:
+                payload += "\n\n" + render_block("user", text)
 
         target = self.participants.for_agent(target_agent)
         self._ensure_target_alive(target)

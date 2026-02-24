@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import queue
 import select
 import shlex
 import shutil
@@ -77,6 +78,17 @@ def _strip_trailing_signal(text: str, signal: str) -> str:
     return "\n".join(lines).rstrip()
 
 
+def _drain_queue(q: queue.Queue[str]) -> list[str]:
+    """Drain all items from a queue without blocking."""
+    items: list[str] = []
+    while True:
+        try:
+            items.append(q.get_nowait())
+        except queue.Empty:
+            break
+    return items
+
+
 @dataclass(frozen=True)
 class CollabRequest:
     """Parsed `/collab` command payload."""
@@ -94,6 +106,7 @@ class ClaodexApplication:
         self._editor = InputEditor()
         self._pending_watches: dict[str, PendingSend] = {}
         self._collab_seed: tuple[PendingSend, ResponseTurn] | None = None
+        self._collab_interjections: queue.Queue[str] = queue.Queue()
         self._input_prefill: str = ""
 
     def run(self, argv: list[str]) -> int:
@@ -733,6 +746,9 @@ class ClaodexApplication:
         last_active_target = request.start_agent
 
         turn_records: list[tuple[PendingSend, ResponseTurn]] = []
+        # prevent stale interjections from a previous collab from leaking
+        # into this run
+        _drain_queue(self._collab_interjections)
 
         halt_event = threading.Event()
         stop_listener = threading.Event()
@@ -799,14 +815,24 @@ class ClaodexApplication:
                     stop_reason = "turns_reached"
                     break
 
+                # include any user interjections typed during this turn
+                interjections = _drain_queue(self._collab_interjections)
+
                 next_target = peer_agent(response.agent)
                 pending = router.send_routed_message(
                     target_agent=next_target,
                     source_agent=response.agent,
                     response_text=response.text,
+                    user_interjections=interjections or None,
                 )
                 last_active_target = next_target
-                print(f"[collab] routing -> {next_target}")
+                if interjections:
+                    print(
+                        f"[collab] routing -> {next_target}"
+                        f" (with {len(interjections)} user interjection(s))"
+                    )
+                else:
+                    print(f"[collab] routing -> {next_target}")
 
         except ClaodexError as exc:
             stop_reason = str(exc)
@@ -817,6 +843,12 @@ class ClaodexApplication:
         finally:
             stop_listener.set()
             listener.join(timeout=0.5)
+
+        # any queued interjections that were not routed inline are dropped
+        # when collab stops
+        remaining = _drain_queue(self._collab_interjections)
+        if remaining:
+            print(f"[collab] dropped {len(remaining)} queued interjection(s)")
 
         initiated_by = seed_turn[1].agent if seed_turn else "user"
         exchange_path = self._write_exchange_log(
@@ -850,9 +882,22 @@ class ClaodexApplication:
             line = sys.stdin.readline()
             if not line:
                 continue
-            if line.strip() == "/halt":
+            stripped = line.strip()
+            if stripped == "/halt":
+                dropped = len(_drain_queue(self._collab_interjections))
                 halt_event.set()
-                print("\n[collab] halt requested")
+                if dropped:
+                    print(
+                        "\n[collab] halt requested "
+                        f"(dropped {dropped} queued interjection(s))"
+                    )
+                else:
+                    print("\n[collab] halt requested")
+            elif stripped:
+                # queue for inclusion in the next routed message;
+                # collab keeps flowing
+                self._collab_interjections.put(stripped)
+                print(f"\n[collab] interjection queued")
 
     def _write_exchange_log(
         self,

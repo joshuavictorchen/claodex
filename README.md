@@ -114,7 +114,9 @@ claude ❯ _
    turn-end marker, then extracts the response.
 
 In `/collab` mode, steps 2-4 repeat automatically, alternating between agents
-for the specified number of turns.
+for the specified number of turns. You can type messages mid-collab — they are
+included in the next routed turn as `--- user ---` blocks without halting the
+exchange.
 
 ## State files
 
