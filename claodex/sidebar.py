@@ -60,6 +60,8 @@ class SidebarApplication:
         self._event_offset: int = 0
         self._event_fragment: str = ""
         self._last_metrics_poll: float = 0.0
+        self._scroll_offset: int = 0
+        self._last_log_height: int = 1
         self._colors_enabled = False
 
     def run(self) -> int:
@@ -106,12 +108,13 @@ class SidebarApplication:
         try:
             curses.start_color()
             curses.use_default_colors()
-            codex_color = 75 if curses.COLORS >= 256 else curses.COLOR_BLUE
-            claude_color = 209 if curses.COLORS >= 256 else curses.COLOR_YELLOW
+            codex_color = 116 if curses.COLORS >= 256 else curses.COLOR_CYAN
+            claude_color = 216 if curses.COLORS >= 256 else curses.COLOR_YELLOW
+            shell_color = 250 if curses.COLORS >= 256 else curses.COLOR_WHITE
             curses.init_pair(PAIR_CODEX, codex_color, -1)
             curses.init_pair(PAIR_CLAUDE, claude_color, -1)
             curses.init_pair(PAIR_ERROR, curses.COLOR_RED, -1)
-            curses.init_pair(PAIR_SHELL, curses.COLOR_CYAN, -1)
+            curses.init_pair(PAIR_SHELL, shell_color, -1)
             curses.init_pair(PAIR_SYSTEM, curses.COLOR_WHITE, -1)
             self._colors_enabled = True
         except curses.error:
@@ -171,6 +174,14 @@ class SidebarApplication:
 
     def _handle_input_key(self, key: str | int) -> None:
         """Update shell input buffer or run command."""
+        if key == curses.KEY_PPAGE:
+            self._scroll_offset += max(1, self._last_log_height)
+            return
+
+        if key == curses.KEY_NPAGE:
+            self._scroll_offset = max(0, self._scroll_offset - max(1, self._last_log_height))
+            return
+
         if key in ("\n", "\r") or key == curses.KEY_ENTER:
             command = self._input_buffer.strip()
             self._input_buffer = ""
@@ -277,9 +288,15 @@ class SidebarApplication:
         """Render tail of wrapped log lines in available space."""
         if height <= 0 or top < 0:
             return
+        self._last_log_height = height
 
         wrapped = self._wrapped_log_lines(max(1, width))
-        visible = wrapped[-height:]
+        max_scroll = max(0, len(wrapped) - height)
+        if self._scroll_offset > max_scroll:
+            self._scroll_offset = max_scroll
+        end_index = len(wrapped) - self._scroll_offset
+        start_index = max(0, end_index - height)
+        visible = wrapped[start_index:end_index]
         start_row = top + max(0, height - len(visible))
         for index, (line, attr) in enumerate(visible):
             row = start_row + index
@@ -310,7 +327,8 @@ class SidebarApplication:
         wrapped: list[tuple[str, int]] = []
         for entry in self._entries:
             timestamp = entry.timestamp.astimezone().strftime("%H:%M:%S")
-            kind_block = f"[{entry.kind:>6}]"
+            kind_padding = " " * max(0, 6 - len(entry.kind))
+            kind_block = f"{kind_padding}[{entry.kind}]"
             prefix = f"{timestamp} {kind_block} "
             chunks = textwrap.wrap(
                 entry.message,

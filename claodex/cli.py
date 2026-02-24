@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import queue
-import select
 import shlex
 import shutil
 import sys
@@ -111,6 +110,7 @@ class ClaodexApplication:
         self._collab_seed: tuple[PendingSend, ResponseTurn] | None = None
         self._collab_interjections: queue.Queue[str] = queue.Queue()
         self._input_prefill: str = ""
+        self._post_halt: bool = False
 
     def run(self, argv: list[str]) -> int:
         """Run the CLI from argv.
@@ -632,6 +632,7 @@ class ClaodexApplication:
                         seed_turn=(seed_pending, seed_response),
                         bus=bus,
                     )
+                    self._clear_terminal_line()
                     continue
 
                 if event.kind != "submit":
@@ -668,9 +669,14 @@ class ClaodexApplication:
                                 request,
                                 bus=bus,
                             )
+                            self._clear_terminal_line()
                             continue
                         self._log_event(bus, "error", f"unknown command: {text}")
                         continue
+
+                    if self._post_halt:
+                        text = f"(collab halted by user)\n\n{text}"
+                        self._post_halt = False
 
                     pending = router.send_user_message(target, text)
                     self._log_event(bus, "sent", f"-> {target}", target=target)
@@ -803,6 +809,14 @@ class ClaodexApplication:
         from .input_editor import InputEvent
 
         return InputEvent(kind="submit", value=line)
+
+    @staticmethod
+    def _clear_terminal_line() -> None:
+        """Clear the active terminal line in TTY mode."""
+        if not sys.stdout.isatty():
+            return
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
 
     def _run_collab(
         self,
@@ -1004,6 +1018,8 @@ class ClaodexApplication:
             f"last active target: {last_active_target}",
             target=last_active_target,
         )
+        if stop_reason == "user_halt":
+            self._post_halt = True
         self._update_metrics(
             bus,
             mode="normal",
@@ -1027,14 +1043,37 @@ class ClaodexApplication:
         if not sys.stdin.isatty():
             return
 
+        from .input_editor import InputEvent
+
+        editor = InputEditor()
+
+        def _on_idle() -> InputEvent | None:
+            if stop_event.is_set() or halt_event.is_set():
+                return InputEvent(kind="quit")
+            return None
+
         while not stop_event.is_set() and not halt_event.is_set():
-            ready, _, _ = select.select([sys.stdin], [], [], 0.2)
-            if not ready:
+            try:
+                event = editor.read("collab", on_idle=_on_idle)
+            except KeyboardInterrupt:
+                dropped = len(_drain_queue(self._collab_interjections))
+                halt_event.set()
+                if dropped:
+                    self._log_event(
+                        bus,
+                        "collab",
+                        f"halt requested (dropped {dropped} queued interjection(s))",
+                    )
+                else:
+                    self._log_event(bus, "collab", "halt requested")
+                break
+
+            if event.kind == "quit":
                 continue
-            line = sys.stdin.readline()
-            if not line:
+            if event.kind != "submit":
                 continue
-            stripped = line.strip()
+
+            stripped = event.value.strip()
             if stripped == "/halt":
                 dropped = len(_drain_queue(self._collab_interjections))
                 halt_event.set()

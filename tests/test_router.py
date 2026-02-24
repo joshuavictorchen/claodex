@@ -398,10 +398,13 @@ def test_send_user_message_stamps_sent_at_before_paste(tmp_path):
     write_delivery_cursor(workspace, "codex", 0)
 
     paste_seen_at: datetime | None = None
+    pasted_payload: str | None = None
 
     def _record_paste_time(_pane: str, _content: str) -> None:
         nonlocal paste_seen_at
+        nonlocal pasted_payload
         paste_seen_at = datetime.now(timezone.utc)
+        pasted_payload = _content
 
     router = Router(
         workspace_root=workspace,
@@ -415,6 +418,7 @@ def test_send_user_message_stamps_sent_at_before_paste(tmp_path):
     assert pending.sent_at is not None
     assert paste_seen_at is not None
     assert pending.sent_at <= paste_seen_at
+    assert pasted_payload == "--- user ---\nhello"
 
 
 def test_send_routed_message_appends_user_interjections(tmp_path):

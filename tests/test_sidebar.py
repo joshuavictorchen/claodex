@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import curses
 import json
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from claodex.sidebar import (
     LogEntry,
@@ -170,11 +172,65 @@ def test_wrapped_log_lines_aligns_kind_and_continuation(tmp_path):
     app._entries.append(entry)
 
     wrapped = app._wrapped_log_lines(width=24)
-    prefix = f"{entry.timestamp.astimezone().strftime('%H:%M:%S')} [  sent] "
+    prefix = f"{entry.timestamp.astimezone().strftime('%H:%M:%S')}   [sent] "
 
     assert wrapped[0][0].startswith(prefix)
     assert len(wrapped) > 1
     assert wrapped[1][0].startswith(" " * len(prefix))
+
+
+def test_handle_input_key_page_scroll_adjusts_offset(tmp_path):
+    workspace = tmp_path / "workspace"
+    app = SidebarApplication(workspace)
+    app._last_log_height = 4
+
+    app._handle_input_key(curses.KEY_PPAGE)
+    assert app._scroll_offset == 4
+    app._handle_input_key(curses.KEY_PPAGE)
+    assert app._scroll_offset == 8
+
+    app._handle_input_key(curses.KEY_NPAGE)
+    assert app._scroll_offset == 4
+    app._handle_input_key(curses.KEY_NPAGE)
+    assert app._scroll_offset == 0
+    app._handle_input_key(curses.KEY_NPAGE)
+    assert app._scroll_offset == 0
+
+
+def test_render_log_applies_scroll_offset_and_clamps(tmp_path):
+    workspace = tmp_path / "workspace"
+    app = SidebarApplication(workspace)
+    wrapped = [(f"line-{index}", 0) for index in range(1, 7)]
+    drawn: list[str] = []
+
+    def _capture_line(_stdscr, _row, text, _width, _attr):  # noqa: ANN001
+        drawn.append(text)
+
+    with (
+        patch.object(app, "_wrapped_log_lines", return_value=wrapped),
+        patch.object(app, "_draw_line", side_effect=_capture_line),
+    ):
+        app._render_log(stdscr=object(), top=0, height=3, width=80)
+    assert drawn == ["line-4", "line-5", "line-6"]
+
+    drawn.clear()
+    app._scroll_offset = 2
+    with (
+        patch.object(app, "_wrapped_log_lines", return_value=wrapped),
+        patch.object(app, "_draw_line", side_effect=_capture_line),
+    ):
+        app._render_log(stdscr=object(), top=0, height=3, width=80)
+    assert drawn == ["line-2", "line-3", "line-4"]
+
+    drawn.clear()
+    app._scroll_offset = 99
+    with (
+        patch.object(app, "_wrapped_log_lines", return_value=wrapped),
+        patch.object(app, "_draw_line", side_effect=_capture_line),
+    ):
+        app._render_log(stdscr=object(), top=0, height=3, width=80)
+    assert app._scroll_offset == 3
+    assert drawn == ["line-1", "line-2", "line-3"]
 
 
 def test_append_shell_entry_uses_timezone_aware_local_timestamp(tmp_path):

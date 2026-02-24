@@ -344,25 +344,97 @@ def test_run_repl_toggle_updates_metrics_target(tmp_path):
     assert seen_buses[0].closed is True
 
 
+def test_run_repl_collab_command_clears_terminal_line(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_file = tmp_path / "session.jsonl"
+    session_file.write_text("", encoding="utf-8")
+    participants = _build_participants(workspace, session_file)
+    application = ClaodexApplication()
+
+    events = iter(
+        [
+            InputEvent(kind="submit", value="/collab draft a plan"),
+            InputEvent(kind="quit"),
+        ]
+    )
+
+    def fake_read_event(_target: str, on_idle=None):  # noqa: ANN001
+        _ = on_idle
+        return next(events)
+
+    with (
+        patch("claodex.cli.UIEventBus", return_value=_BusRecorder()),
+        patch("claodex.cli.Router", return_value=object()),
+        patch("claodex.cli.kill_session"),
+        patch.object(application, "_read_event", side_effect=fake_read_event),
+        patch.object(application, "_run_collab") as run_collab_mock,
+        patch.object(application, "_clear_terminal_line") as clear_line_mock,
+    ):
+        application._run_repl(workspace, participants)
+
+    run_collab_mock.assert_called_once()
+    clear_line_mock.assert_called_once()
+
+
+def test_run_repl_seeded_collab_clears_terminal_line(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_file = tmp_path / "session.jsonl"
+    session_file.write_text("", encoding="utf-8")
+    participants = _build_participants(workspace, session_file)
+    application = ClaodexApplication()
+    application._collab_seed = (
+        PendingSend(
+            target_agent="claude",
+            before_cursor=0,
+            sent_text="seed",
+            sent_at=datetime.now(timezone.utc),
+        ),
+        ResponseTurn(agent="claude", text="seed response", source_cursor=1),
+    )
+
+    events = iter(
+        [
+            InputEvent(kind="collab_initiated"),
+            InputEvent(kind="quit"),
+        ]
+    )
+
+    def fake_read_event(_target: str, on_idle=None):  # noqa: ANN001
+        _ = on_idle
+        return next(events)
+
+    with (
+        patch("claodex.cli.UIEventBus", return_value=_BusRecorder()),
+        patch("claodex.cli.Router", return_value=object()),
+        patch("claodex.cli.kill_session"),
+        patch.object(application, "_read_event", side_effect=fake_read_event),
+        patch.object(application, "_run_collab") as run_collab_mock,
+        patch.object(application, "_clear_terminal_line") as clear_line_mock,
+    ):
+        application._run_repl(workspace, participants)
+
+    run_collab_mock.assert_called_once()
+    clear_line_mock.assert_called_once()
+
+
 def test_halt_listener_queues_interjection_without_halting():
     """Non-/halt input during collab is queued and does not stop collab."""
     application = ClaodexApplication()
     halt_event = threading.Event()
     stop_event = threading.Event()
 
-    def fake_select(rlist, _wlist, _xlist, _timeout):
-        return rlist, [], []
-
-    def fake_readline() -> str:
+    def fake_read(target: str, on_idle=None, idle_interval=0.2, prefill=""):  # noqa: ANN001
+        del target, on_idle, idle_interval, prefill
         stop_event.set()
-        return "please include perf numbers\n"
+        return InputEvent(kind="submit", value="please include perf numbers")
 
     with (
-        patch("claodex.cli.select.select", side_effect=fake_select),
+        patch("claodex.cli.InputEditor.read", side_effect=fake_read),
         patch("sys.stdin") as mock_stdin,
     ):
         mock_stdin.isatty.return_value = True
-        mock_stdin.readline.side_effect = fake_readline
         application._halt_listener(halt_event=halt_event, stop_event=stop_event)
 
     assert not halt_event.is_set()
@@ -376,19 +448,34 @@ def test_halt_listener_drops_queued_interjections_on_halt():
     halt_event = threading.Event()
     stop_event = threading.Event()
 
-    def fake_select(rlist, _wlist, _xlist, _timeout):
-        return rlist, [], []
+    def fake_read(target: str, on_idle=None, idle_interval=0.2, prefill=""):  # noqa: ANN001
+        del target, on_idle, idle_interval, prefill
+        return InputEvent(kind="submit", value="/halt")
 
     with (
-        patch("claodex.cli.select.select", side_effect=fake_select),
+        patch("claodex.cli.InputEditor.read", side_effect=fake_read),
         patch("sys.stdin") as mock_stdin,
     ):
         mock_stdin.isatty.return_value = True
-        mock_stdin.readline.return_value = "/halt\n"
         application._halt_listener(halt_event=halt_event, stop_event=stop_event)
 
     assert halt_event.is_set()
     assert _drain_queue(application._collab_interjections) == []
+
+
+def test_halt_listener_keyboard_interrupt_sets_halt():
+    application = ClaodexApplication()
+    halt_event = threading.Event()
+    stop_event = threading.Event()
+
+    with (
+        patch("claodex.cli.InputEditor.read", side_effect=KeyboardInterrupt),
+        patch("sys.stdin") as mock_stdin,
+    ):
+        mock_stdin.isatty.return_value = True
+        application._halt_listener(halt_event=halt_event, stop_event=stop_event)
+
+    assert halt_event.is_set()
 
 
 class _RouterStub:
@@ -428,6 +515,29 @@ class _RouterStub:
         )
 
 
+class _ReplRouterStub:
+    """Router stub for REPL send assertions."""
+
+    def __init__(self) -> None:
+        self.sent_user_messages: list[tuple[str, str]] = []
+        self.config = type("Config", (), {"turn_timeout_seconds": 18000})()
+
+    def send_user_message(self, target_agent: str, user_text: str) -> PendingSend:
+        self.sent_user_messages.append((target_agent, user_text))
+        return PendingSend(
+            target_agent=target_agent,
+            before_cursor=0,
+            sent_text=user_text,
+            sent_at=datetime.now(timezone.utc),
+        )
+
+    def clear_poll_latch(self, _agent: str, _before_cursor: int) -> None:
+        return
+
+    def poll_for_response(self, _pending: PendingSend):  # noqa: ANN001
+        return None
+
+
 def test_run_collab_halt_drops_remaining_interjections(tmp_path):
     """Queued interjections are discarded on halt and never auto-sent."""
     workspace = tmp_path / "workspace"
@@ -450,3 +560,48 @@ def test_run_collab_halt_drops_remaining_interjections(tmp_path):
     assert router.send_user_calls == [("claude", "do the task")]
     assert router.send_routed_calls == []
     assert _drain_queue(application._collab_interjections) == []
+    assert application._post_halt is True
+
+
+def test_run_repl_prepends_post_halt_annotation_once(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_file = tmp_path / "session.jsonl"
+    session_file.write_text("", encoding="utf-8")
+    participants = _build_participants(workspace, session_file)
+    application = ClaodexApplication()
+    router = _ReplRouterStub()
+
+    events = iter(
+        [
+            InputEvent(kind="submit", value="/collab draft plan"),
+            InputEvent(kind="submit", value="first follow-up"),
+            InputEvent(kind="submit", value="second follow-up"),
+            InputEvent(kind="quit"),
+        ]
+    )
+
+    def fake_read_event(_target: str, on_idle=None):  # noqa: ANN001
+        _ = on_idle
+        return next(events)
+
+    def fake_run_collab(*_args, **_kwargs):  # noqa: ANN001
+        application._post_halt = True
+
+    with (
+        patch("claodex.cli.UIEventBus", return_value=_BusRecorder()),
+        patch("claodex.cli.Router", return_value=router),
+        patch("claodex.cli.kill_session"),
+        patch.object(application, "_read_event", side_effect=fake_read_event),
+        patch.object(application, "_run_collab", side_effect=fake_run_collab),
+        patch.object(application, "_clear_terminal_line"),
+    ):
+        application._run_repl(workspace, participants)
+
+    assert len(router.sent_user_messages) == 2
+    assert router.sent_user_messages[0] == (
+        "claude",
+        "(collab halted by user)\n\nfirst follow-up",
+    )
+    assert router.sent_user_messages[1] == ("claude", "second follow-up")
+    assert application._post_halt is False

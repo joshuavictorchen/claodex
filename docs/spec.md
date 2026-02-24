@@ -227,8 +227,8 @@ The CLI MUST maintain a current target: `claude` or `codex`. Default: `claude`.
 
 The prompt MUST display the current target with agent-specific color:
 
-- `claude ❯` in orange (`\033[38;5;208m`)
-- `codex ❯` in blue (`\033[94m`)
+- `claude ❯` in orange (`\033[38;5;216m`)
+- `codex ❯` in blue-cyan (`\033[38;5;116m`)
 
 The prompt renderer MUST account for ANSI escape sequence length when
 computing cursor positions. A `visible_len()` helper MUST strip escape
@@ -549,10 +549,8 @@ Where `{source}` is one of: `claude`, `codex`, or `user`.
 <user's message>
 ```
 
-In normal mode when there is no delta, the `--- user ---` header MAY be
-omitted — the message is delivered bare. The header MUST be present when
-any delta precedes the user message, so the agent can distinguish context
-from instruction.
+In normal mode when there is no delta, the `--- user ---` header MUST still
+be present for consistency with delta-carrying messages.
 
 **Collab routed message** (peer response forwarded during collab):
 

@@ -17,9 +17,11 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 def _colored_prompt(target: str) -> str:
     """Return ANSI-colored prompt for the current target."""
     if target == "claude":
-        return "\033[38;5;209mclaude ❯ \033[0m"
+        return "\033[38;5;216mclaude ❯ \033[0m"
     if target == "codex":
-        return "\033[38;5;75mcodex ❯  \033[0m"
+        return "\033[38;5;116m codex ❯ \033[0m"
+    if target == "collab":
+        return "\033[90mcollab ❯ \033[0m"
     return f"{target} ❯ "
 
 

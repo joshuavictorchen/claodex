@@ -278,7 +278,7 @@ class Router:
 
         delta_events, peer_cursor = self.build_delta_for_target(target_agent)
         if not delta_events:
-            return user_text, None
+            return render_block("user", user_text), None
 
         blocks = []
         for event in delta_events:

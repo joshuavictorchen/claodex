@@ -294,8 +294,9 @@ def test_render_continuation_indents_to_prompt_width():
 
 
 def test_colored_prompt_uses_agent_colors():
-    assert _colored_prompt("claude") == "\033[38;5;209mclaude ❯ \033[0m"
-    assert _colored_prompt("codex") == "\033[38;5;75mcodex ❯  \033[0m"
+    assert _colored_prompt("claude") == "\033[38;5;216mclaude ❯ \033[0m"
+    assert _colored_prompt("codex") == "\033[38;5;116m codex ❯ \033[0m"
+    assert _colored_prompt("collab") == "\033[90mcollab ❯ \033[0m"
 
 
 def test_visible_len_ignores_ansi_escape_sequences():
@@ -331,7 +332,7 @@ def test_render_continuation_uses_visible_prompt_width():
         patch.object(editor, "_write", side_effect=writes.append),
     ):
         editor._render(
-            prompt="\033[38;5;75mcodex ❯  \033[0m",
+            prompt="\033[38;5;116m codex ❯ \033[0m",
             buffer=list("line1\nline2"),
             cursor=len("line1\nline2"),
             previous_render=(1, 0),
