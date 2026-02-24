@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from claodex.input_editor import InputEditor, InputEvent
+from claodex.input_editor import InputEditor, InputEvent, _colored_prompt, _visible_len
 
 
 FAKE_FD = 99
@@ -291,6 +291,36 @@ def test_render_continuation_indents_to_prompt_width():
         )
 
     assert "\r\n       line2" in "".join(writes)
+
+
+def test_colored_prompt_uses_agent_colors():
+    assert _colored_prompt("claude") == "\033[38;5;208mclaude ❯ \033[0m"
+    assert _colored_prompt("codex") == "\033[94mcodex ❯ \033[0m"
+
+
+def test_visible_len_ignores_ansi_escape_sequences():
+    prompt = _colored_prompt("claude")
+    assert _visible_len(prompt) == len("claude ❯ ")
+
+
+def test_render_continuation_uses_visible_prompt_width():
+    editor = InputEditor()
+    writes: list[str] = []
+
+    with (
+        patch("os.get_terminal_size", return_value=os.terminal_size((80, 24))),
+        patch.object(editor, "_move_up"),
+        patch.object(editor, "_clear_n_lines"),
+        patch.object(editor, "_write", side_effect=writes.append),
+    ):
+        editor._render(
+            prompt="\033[94mcodex ❯ \033[0m",
+            buffer=list("line1\nline2"),
+            cursor=len("line1\nline2"),
+            previous_render=(1, 0),
+        )
+
+    assert "\r\n        line2" in "".join(writes)
 
 
 def test_read_prefill_submits_existing_text():

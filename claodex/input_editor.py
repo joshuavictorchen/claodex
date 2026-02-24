@@ -4,11 +4,28 @@ from __future__ import annotations
 
 import codecs
 import os
+import re
 import select
 import sys
 import termios
 import tty
 from dataclasses import dataclass
+
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _colored_prompt(target: str) -> str:
+    """Return ANSI-colored prompt for the current target."""
+    if target == "claude":
+        return "\033[38;5;208mclaude ❯ \033[0m"
+    if target == "codex":
+        return "\033[94mcodex ❯ \033[0m"
+    return f"{target} ❯ "
+
+
+def _visible_len(value: str) -> int:
+    """Return display width excluding ANSI escape sequences."""
+    return len(ANSI_ESCAPE_RE.sub("", value))
 
 
 @dataclass(frozen=True)
@@ -47,7 +64,7 @@ class InputEditor:
         Returns:
             InputEvent for submitted text or control action.
         """
-        prompt = f"{target} ❯ "
+        prompt = _colored_prompt(target)
         buffer: list[str] = list(prefill)
         cursor = len(buffer)
         history_index: int | None = None
@@ -290,14 +307,15 @@ class InputEditor:
         lines = text.split("\n")
         if not lines:
             lines = [""]
-        continuation_prefix = " " * len(prompt)
+        prompt_width = _visible_len(prompt)
+        continuation_prefix = " " * prompt_width
 
         columns = os.get_terminal_size().columns
 
         # count visual rows per logical line, accounting for terminal wrapping
         visual_per_line: list[int] = []
         for i, line in enumerate(lines):
-            prefix_len = len(prompt) if i == 0 else len(continuation_prefix)
+            prefix_len = prompt_width if i == 0 else len(continuation_prefix)
             char_count = prefix_len + len(line)
             visual_per_line.append(max(1, -(-char_count // columns)))
         visual_lines = sum(visual_per_line)
@@ -316,7 +334,7 @@ class InputEditor:
         # position cursor accounting for wrapping
         cursor_line = text[:cursor].count("\n")
         cursor_col_in_line = len(text[:cursor].split("\n")[-1])
-        prefix_len = len(prompt) if cursor_line == 0 else len(continuation_prefix)
+        prefix_len = prompt_width if cursor_line == 0 else len(continuation_prefix)
         absolute_col = prefix_len + cursor_col_in_line
 
         # visual row and column of the cursor within the full render;
