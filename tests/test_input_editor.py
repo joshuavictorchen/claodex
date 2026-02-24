@@ -393,6 +393,37 @@ def test_down_on_last_wrapped_visual_row_goes_end():
     assert event.value == "abcdefghijX"
 
 
+def test_up_moves_across_word_wrapped_rows():
+    """Up/down navigation tracks variable word-wrap segment lengths."""
+    buf = list("alpha beta gamma")
+    with patch("os.get_terminal_size", return_value=os.terminal_size((16, 24))):
+        event = _feed_bytes(b"\x1b[AX\r", buffer=buf, cursor=13)
+    assert event.kind == "submit"
+    assert event.value == "alpha beXta gamma"
+
+
+def test_render_wrap_prefers_space_boundary_over_hard_split():
+    """Soft wrap should break at spaces when one exists in row width."""
+    editor = InputEditor()
+    writes: list[str] = []
+
+    with (
+        patch("os.get_terminal_size", return_value=os.terminal_size((16, 24))),
+        patch.object(editor, "_move_up"),
+        patch.object(editor, "_clear_n_lines"),
+        patch.object(editor, "_write", side_effect=writes.append),
+    ):
+        editor._render(
+            prompt="test > ",
+            buffer=list("alpha beta gamma"),
+            cursor=len("alpha beta gamma"),
+            previous_render=(1, 0),
+        )
+
+    rendered = "".join(writes)
+    assert "test > alpha \r\n       beta \r\n       gamma" in rendered
+
+
 def test_render_continuation_indents_to_prompt_width():
     """Multi-line render aligns continuation lines under message text."""
     editor = InputEditor()

@@ -874,6 +874,7 @@ class ClaodexApplication:
         listener_kwargs: dict[str, object] = {
             "halt_event": halt_event,
             "stop_event": stop_listener,
+            "editor": self._editor,
         }
         if bus is not None:
             listener_kwargs["bus"] = bus
@@ -898,6 +899,12 @@ class ClaodexApplication:
                     latency_seconds=self._response_latency_seconds(seed_pending),
                 )
                 self._update_metrics(bus, collab_turn=turns_completed, collab_max=request.turns)
+                self._log_event(
+                    bus,
+                    "recv",
+                    f"<- {seed_response.agent} ({words} words)",
+                    agent=seed_response.agent,
+                )
                 self._log_event(
                     bus,
                     "collab",
@@ -941,6 +948,12 @@ class ClaodexApplication:
                     latency_seconds=self._response_latency_seconds(pending),
                 )
                 self._update_metrics(bus, collab_turn=turns_completed, collab_max=request.turns)
+                self._log_event(
+                    bus,
+                    "recv",
+                    f"<- {response.agent} ({words} words)",
+                    agent=response.agent,
+                )
                 self._log_event(
                     bus,
                     "collab",
@@ -1044,6 +1057,7 @@ class ClaodexApplication:
         self,
         halt_event: threading.Event,
         stop_event: threading.Event,
+        editor: InputEditor | None = None,
         bus: UIEventBus | None = None,
     ) -> None:
         """Watch stdin for `/halt` while collab mode runs.
@@ -1051,6 +1065,7 @@ class ClaodexApplication:
         Args:
             halt_event: Set when halt is requested.
             stop_event: Set when listener should stop.
+            editor: Shared input editor to preserve prompt history across modes.
             bus: Optional event bus for collab status events.
         """
         if not sys.stdin.isatty():
@@ -1058,7 +1073,7 @@ class ClaodexApplication:
 
         from .input_editor import InputEvent
 
-        editor = InputEditor()
+        shared_editor = editor or self._editor
 
         def _on_idle() -> InputEvent | None:
             if stop_event.is_set() or halt_event.is_set():
@@ -1067,7 +1082,7 @@ class ClaodexApplication:
 
         while not stop_event.is_set() and not halt_event.is_set():
             try:
-                event = editor.read("collab", on_idle=_on_idle)
+                event = shared_editor.read("collab", on_idle=_on_idle)
             except KeyboardInterrupt:
                 dropped = len(_drain_queue(self._collab_interjections))
                 halt_event.set()

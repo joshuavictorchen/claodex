@@ -62,7 +62,6 @@ class _VisualLayout:
     text: str
     lines: list[str]
     segmented_lines: list[list[str]]
-    visual_per_line: list[int]
     visual_rows: list[_VisualRow]
     prompt_width: int
     continuation_prefix: str
@@ -318,23 +317,17 @@ class InputEditor:
 
         segmented_lines: list[list[str]] = []
         visual_rows: list[_VisualRow] = []
-        visual_per_line: list[int] = []
         line_start = 0
 
         for line_index, line in enumerate(lines):
-            if not line:
-                segments = [""]
-            else:
-                segments = [
-                    line[index : index + usable_per_row]
-                    for index in range(0, len(line), usable_per_row)
-                ]
+            segments = self._wrap_line_to_visual_rows(line, usable_per_row)
             segmented_lines.append(segments)
-            visual_per_line.append(len(segments))
 
-            for segment_index, segment in enumerate(segments):
-                segment_start = line_start + (segment_index * usable_per_row)
+            segment_offset = 0
+            for segment in segments:
+                segment_start = line_start + segment_offset
                 visual_rows.append(_VisualRow(start=segment_start, length=len(segment)))
+                segment_offset += len(segment)
 
             line_start += len(line)
             if line_index < len(lines) - 1:
@@ -344,36 +337,57 @@ class InputEditor:
             text=text,
             lines=lines,
             segmented_lines=segmented_lines,
-            visual_per_line=visual_per_line,
             visual_rows=visual_rows,
             prompt_width=prompt_width,
             continuation_prefix=continuation_prefix,
             usable_per_row=usable_per_row,
         )
 
+    @staticmethod
+    def _wrap_line_to_visual_rows(line: str, usable_per_row: int) -> list[str]:
+        """Wrap one logical line into visual rows.
+
+        Prefers breaking after the last space inside the row width. If no
+        suitable space exists (single long word), falls back to a hard break.
+        """
+        if not line:
+            return [""]
+
+        segments: list[str] = []
+        start = 0
+        while start < len(line):
+            remaining = len(line) - start
+            if remaining <= usable_per_row:
+                segments.append(line[start:])
+                break
+
+            window = line[start : start + usable_per_row]
+            break_index = window.rfind(" ")
+            if break_index > 0:
+                end = start + break_index + 1
+            else:
+                end = start + usable_per_row
+            segments.append(line[start:end])
+            start = end
+
+        return segments
+
     def _cursor_to_visual_position(self, layout: _VisualLayout, cursor: int) -> tuple[int, int]:
         """Map cursor index to visual (row, col) using layout wrap rules."""
         bounded_cursor = min(max(0, cursor), len(layout.text))
-        before_cursor = layout.text[:bounded_cursor]
-        cursor_line = before_cursor.count("\n")
-        cursor_col_in_line = len(before_cursor.split("\n")[-1])
-        cursor_line_length = len(layout.lines[cursor_line])
-        cursor_segments = layout.segmented_lines[cursor_line]
+        if not layout.visual_rows:
+            return 0, 0
 
-        if (
-            cursor_col_in_line == cursor_line_length
-            and cursor_col_in_line > 0
-            and cursor_col_in_line % layout.usable_per_row == 0
-        ):
-            # keep boundary-at-end positions on the last occupied row
-            cursor_segment_index = len(cursor_segments) - 1
-            cursor_segment_col = layout.usable_per_row
-        else:
-            cursor_segment_index = cursor_col_in_line // layout.usable_per_row
-            cursor_segment_col = cursor_col_in_line % layout.usable_per_row
+        for row_index, row in enumerate(layout.visual_rows):
+            row_start = row.start
+            row_end = row.start + row.length
+            if bounded_cursor <= row_end:
+                if bounded_cursor < row_start:
+                    return row_index, 0
+                return row_index, bounded_cursor - row_start
 
-        cursor_visual_row = sum(layout.visual_per_line[:cursor_line]) + cursor_segment_index
-        return cursor_visual_row, cursor_segment_col
+        last_row = layout.visual_rows[-1]
+        return len(layout.visual_rows) - 1, last_row.length
 
     @staticmethod
     def _visual_position_to_cursor(layout: _VisualLayout, row: int, col: int) -> int:

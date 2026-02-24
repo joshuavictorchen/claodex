@@ -642,9 +642,17 @@ def test_run_collab_halt_drops_remaining_interjections(tmp_path):
     request = CollabRequest(turns=3, start_agent="claude", message="do the task")
 
     application._write_exchange_log = lambda **_kwargs: workspace / "exchange.md"
+    captured_editor = None
 
-    def fake_halt_listener(halt_event: threading.Event, stop_event: threading.Event) -> None:
-        del stop_event
+    def fake_halt_listener(
+        halt_event: threading.Event,
+        stop_event: threading.Event,
+        editor=None,
+        bus=None,
+    ) -> None:
+        del stop_event, bus
+        nonlocal captured_editor
+        captured_editor = editor
         application._collab_interjections.put("queued while waiting")
         halt_event.set()
 
@@ -652,9 +660,85 @@ def test_run_collab_halt_drops_remaining_interjections(tmp_path):
     application._run_collab(workspace_root=workspace, router=router, request=request)
 
     assert router.send_user_calls == [("claude", "do the task")]
+    assert captured_editor is application._editor
     assert router.send_routed_calls == []
     assert _drain_queue(application._collab_interjections) == []
     assert application._post_halt is True
+
+
+def test_run_collab_logs_recv_event_for_completed_turn(tmp_path):
+    """Collab responses emit recv events so sidebar turn counters advance."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    application = ClaodexApplication()
+    router = _RouterStub()
+    request = CollabRequest(turns=1, start_agent="claude", message="do the task")
+    bus = _BusRecorder()
+
+    application._write_exchange_log = lambda **_kwargs: workspace / "exchange.md"
+
+    def fake_halt_listener(*_args, **_kwargs):  # noqa: ANN001
+        return
+
+    application._halt_listener = fake_halt_listener  # type: ignore[method-assign]
+    application._run_collab(workspace_root=workspace, router=router, request=request, bus=bus)
+
+    recv_events = [event for event in bus.events if event["kind"] == "recv"]
+    assert recv_events == [
+        {
+            "kind": "recv",
+            "message": "<- claude (1 words)",
+            "agent": "claude",
+            "target": None,
+            "meta": None,
+        }
+    ]
+
+
+def test_run_collab_logs_recv_event_for_seed_turn(tmp_path):
+    """Seeded collab responses also emit recv events for turn counters."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    application = ClaodexApplication()
+    router = _RouterStub()
+    request = CollabRequest(turns=1, start_agent="claude", message="do the task")
+    bus = _BusRecorder()
+    seed_turn = (
+        PendingSend(
+            target_agent="codex",
+            before_cursor=0,
+            sent_text="seed",
+            sent_at=datetime.now(timezone.utc),
+        ),
+        ResponseTurn(agent="codex", text="seed reply", source_cursor=1),
+    )
+
+    application._write_exchange_log = lambda **_kwargs: workspace / "exchange.md"
+
+    def fake_halt_listener(*_args, **_kwargs):  # noqa: ANN001
+        return
+
+    application._halt_listener = fake_halt_listener  # type: ignore[method-assign]
+    application._run_collab(
+        workspace_root=workspace,
+        router=router,
+        request=request,
+        seed_turn=seed_turn,
+        bus=bus,
+    )
+
+    recv_events = [event for event in bus.events if event["kind"] == "recv"]
+    assert recv_events == [
+        {
+            "kind": "recv",
+            "message": "<- codex (2 words)",
+            "agent": "codex",
+            "target": None,
+            "meta": None,
+        }
+    ]
 
 
 def test_run_repl_prepends_post_halt_annotation_once(tmp_path):

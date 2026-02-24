@@ -118,7 +118,7 @@ class SidebarApplication:
             codex_color = 116 if curses.COLORS >= 256 else curses.COLOR_CYAN
             claude_color = 216 if curses.COLORS >= 256 else curses.COLOR_YELLOW
             shell_color = 250 if curses.COLORS >= 256 else curses.COLOR_WHITE
-            mode_color = 78 if curses.COLORS >= 256 else curses.COLOR_GREEN
+            mode_color = curses.COLOR_GREEN
             curses.init_pair(PAIR_CODEX, codex_color, -1)
             curses.init_pair(PAIR_CLAUDE, claude_color, -1)
             curses.init_pair(PAIR_ERROR, curses.COLOR_RED, -1)
