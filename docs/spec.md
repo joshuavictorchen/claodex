@@ -227,7 +227,7 @@ to the current target.
 
 | Command | Description |
 |---------|-------------|
-| `/collab [--turns N] <message>` | Start collaboration mode. Default turns: 10. |
+| `/collab [--turns N] <message>` | Start collaboration mode. Default turns: 100. |
 | `/halt` | Stop collaboration mode after the current turn completes. |
 | `/status` | Show agent status, cursor positions, collab state. |
 | `/quit` | Kill agent sessions, tmux session, and exit. |
@@ -375,7 +375,7 @@ collaboration.
 /collab [--turns N] [--start <agent>] <message>
 ```
 
-- `--turns N`: maximum turns (default: 10). One turn = one message sent to
+- `--turns N`: maximum turns (default: 100). One turn = one message sent to
   one agent and one response received. A full round-trip (both agents) = 2
   turns.
 - `--start <agent>`: which agent receives the initial message. Default:
@@ -544,7 +544,7 @@ Cursors MUST only advance, never retreat.
 Started: <ISO 8601>
 Agents: <agent_a> ↔ <agent_b>
 Rounds: <N>
-Stop reason: <turns_reached | user_halt | timeout | agent_exited>
+Stop reason: <turns_reached | user_halt | timeout | agent_exited | converged>
 
 ## Round 1
 

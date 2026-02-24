@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from claodex.cli import parse_collab_request
+from claodex.cli import _has_converge_signal, parse_collab_request
 from claodex.errors import ClaodexError
 from claodex.router import PendingSend, Router, RoutingConfig, strip_injected_context
 from claodex.state import (
@@ -226,7 +226,7 @@ def _participants(workspace: Path, claude_session: Path, codex_session: Path) ->
 
 def test_parse_collab_request_defaults():
     parsed = parse_collab_request("/collab design api", default_start="claude")
-    assert parsed.turns == 10
+    assert parsed.turns == 100
     assert parsed.start_agent == "claude"
     assert parsed.message == "design api"
 
@@ -277,6 +277,32 @@ def test_parse_collab_request_double_dash_terminates_options():
     parsed = parse_collab_request("/collab --turns 2 -- --this starts with dashes", default_start="claude")
     assert parsed.turns == 2
     assert parsed.message == "--this starts with dashes"
+
+
+# -- convergence signal tests --
+
+
+def test_converge_signal_on_last_line():
+    assert _has_converge_signal("Looks good.\n\n[CONVERGED]")
+
+
+def test_converge_signal_with_trailing_whitespace():
+    assert _has_converge_signal("Done.\n[CONVERGED]  \n\n")
+
+
+def test_converge_signal_not_triggered_by_mention():
+    # agent discusses the signal mid-message — should not trigger
+    assert not _has_converge_signal(
+        "We could use [CONVERGED] to end collab.\nBut I have more to say."
+    )
+
+
+def test_converge_signal_absent():
+    assert not _has_converge_signal("I think we need another round.")
+
+
+def test_converge_signal_empty_text():
+    assert not _has_converge_signal("")
 
 
 def test_strip_injected_context_keeps_final_user_block():

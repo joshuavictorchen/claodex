@@ -59,6 +59,17 @@ state your assumption. For ambiguities that affect interfaces,
 observable behavior, or irreversible decisions, ask one targeted
 clarification question rather than guessing.
 
+## collab mode
+
+The user can start a multi-turn automated exchange between you and your
+peer using `/collab`. When active:
+
+- Messages route directly between agents with no user intervention per turn.
+- The user watches but does not participate until collab ends or they `/halt`.
+- To signal convergence, end your message with `[CONVERGED]` on its own line.
+  When both agents signal `[CONVERGED]` in consecutive turns, collab ends and
+  control returns to the user.
+
 ## change pointers
 
 When you edit files, end your message with a change pointers list: file path, line range, and intent. One line per file.

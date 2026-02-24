@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .constants import (
     AGENTS,
+    CONVERGE_SIGNAL,
     DEFAULT_COLLAB_TURNS,
     DEFAULT_POLL_SECONDS,
     DEFAULT_TURN_TIMEOUT_SECONDS,
@@ -53,6 +54,15 @@ from .tmux_ops import (
     session_exists,
     start_agent_processes,
 )
+
+
+def _has_converge_signal(text: str) -> bool:
+    """Check if the last non-empty line of *text* is the converge signal."""
+    for line in reversed(text.splitlines()):
+        stripped = line.strip()
+        if stripped:
+            return stripped == CONVERGE_SIGNAL
+    return False
 
 
 @dataclass(frozen=True)
@@ -627,6 +637,15 @@ class ClaodexApplication:
                 )
 
                 turn_records.append((pending, response))
+
+                # convergence: both agents signaled in consecutive turns
+                if (
+                    len(turn_records) >= 2
+                    and _has_converge_signal(turn_records[-1][1].text)
+                    and _has_converge_signal(turn_records[-2][1].text)
+                ):
+                    stop_reason = "converged"
+                    break
 
                 if halt_event.is_set():
                     stop_reason = "user_halt"
