@@ -148,16 +148,42 @@ class InputEditor:
                     cursor = min(cursor + 1, len(buffer))
                 elif sequence in {"[D", "OD"}:  # left
                     cursor = max(cursor - 1, 0)
-                elif sequence in {"[A", "OA"}:  # up history
-                    if self._history:
+                elif sequence in {"[A", "OA"}:  # up
+                    text = "".join(buffer)
+                    if "\n" in text:
+                        # multi-line: move cursor up one logical line
+                        before = text[:cursor]
+                        line_idx = before.count("\n")
+                        col = len(before.split("\n")[-1])
+                        if line_idx == 0:
+                            cursor = 0
+                        else:
+                            lines = text.split("\n")
+                            target_col = min(col, len(lines[line_idx - 1]))
+                            cursor = sum(len(lines[i]) + 1 for i in range(line_idx - 1)) + target_col
+                    elif self._history:
+                        # single-line: history back
                         if history_index is None:
                             history_index = len(self._history) - 1
                         else:
                             history_index = max(0, history_index - 1)
                         buffer = list(self._history[history_index])
                         cursor = len(buffer)
-                elif sequence in {"[B", "OB"}:  # down history
-                    if self._history:
+                elif sequence in {"[B", "OB"}:  # down
+                    text = "".join(buffer)
+                    if "\n" in text:
+                        # multi-line: move cursor down one logical line
+                        before = text[:cursor]
+                        line_idx = before.count("\n")
+                        col = len(before.split("\n")[-1])
+                        lines = text.split("\n")
+                        if line_idx >= len(lines) - 1:
+                            cursor = len(buffer)
+                        else:
+                            target_col = min(col, len(lines[line_idx + 1]))
+                            cursor = sum(len(lines[i]) + 1 for i in range(line_idx + 1)) + target_col
+                    elif self._history:
+                        # single-line: history forward
                         if history_index is None:
                             pass
                         elif history_index >= len(self._history) - 1:
@@ -172,6 +198,9 @@ class InputEditor:
                     cursor = 0
                 elif sequence in {"[F", "OF", "[4~"}:  # end
                     cursor = len(buffer)
+                elif sequence == "[3~":  # delete (forward)
+                    if cursor < len(buffer):
+                        del buffer[cursor]
                 previous_render = self._render(prompt, buffer, cursor, previous_render)
                 continue
 
@@ -243,7 +272,7 @@ class InputEditor:
             if line_index == 0:
                 self._write(f"{prompt}{line}")
             else:
-                self._write(f"\n... {line}")
+                self._write(f"\r\n... {line}")
 
         # position cursor accounting for wrapping
         cursor_line = text[:cursor].count("\n")
