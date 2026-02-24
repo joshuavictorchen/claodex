@@ -13,7 +13,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from .state import ui_events_file, ui_metrics_file
 
@@ -25,12 +25,14 @@ SHELL_MAX_LINES = 100
 SHELL_MAX_BYTES = 10 * 1024
 INTERACTIVE_COMMANDS = frozenset({"vim", "nvim", "nano", "less", "more", "top", "htop"})
 LOG_PAGE_SCROLL_LINES = 3
+SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 PAIR_CODEX = 1
 PAIR_CLAUDE = 2
 PAIR_ERROR = 3
 PAIR_SHELL = 4
 PAIR_SYSTEM = 5
+PAIR_MODE = 6
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,7 @@ class SidebarApplication:
         self._scroll_offset: int = 0
         self._last_log_height: int = 1
         self._colors_enabled = False
+        self._spinner_index: int = 0
 
     def run(self) -> int:
         """Run sidebar app until interrupted."""
@@ -114,11 +117,13 @@ class SidebarApplication:
             codex_color = 116 if curses.COLORS >= 256 else curses.COLOR_CYAN
             claude_color = 216 if curses.COLORS >= 256 else curses.COLOR_YELLOW
             shell_color = 250 if curses.COLORS >= 256 else curses.COLOR_WHITE
+            mode_color = 78 if curses.COLORS >= 256 else curses.COLOR_GREEN
             curses.init_pair(PAIR_CODEX, codex_color, -1)
             curses.init_pair(PAIR_CLAUDE, claude_color, -1)
             curses.init_pair(PAIR_ERROR, curses.COLOR_RED, -1)
             curses.init_pair(PAIR_SHELL, shell_color, -1)
             curses.init_pair(PAIR_SYSTEM, curses.COLOR_WHITE, -1)
+            curses.init_pair(PAIR_MODE, mode_color, -1)
             self._colors_enabled = True
         except curses.error:
             self._colors_enabled = False
@@ -273,12 +278,10 @@ class SidebarApplication:
             stdscr.refresh()
             return
 
-        metrics_lines = _format_metrics_lines(self._metrics, now=datetime.now().astimezone())
-        metrics_height = min(3, max(1, height - 2))
-        for row in range(min(metrics_height, len(metrics_lines), height)):
-            self._draw_line(stdscr, row, metrics_lines[row], width, curses.A_BOLD if row == 0 else 0)
+        now = datetime.now().astimezone()
+        self._render_metrics_strip(stdscr, row=0, width=width, now=now)
 
-        metrics_separator_row = metrics_height
+        metrics_separator_row = 1
         shell_row = height - 1
         shell_separator_row = max(metrics_separator_row + 1, shell_row - 1)
 
@@ -294,6 +297,63 @@ class SidebarApplication:
         self._render_shell_input(stdscr, row=shell_row, width=width)
 
         stdscr.refresh()
+
+    def _render_metrics_strip(
+        self,
+        stdscr: "curses._CursesWindow",
+        *,
+        row: int,
+        width: int,
+        now: datetime,
+    ) -> None:
+        """Render the one-line metrics strip with priority-based truncation."""
+        if row < 0:
+            return
+
+        spinner_frame = SPINNER_FRAMES[self._spinner_index]
+        self._spinner_index = (self._spinner_index + 1) % len(SPINNER_FRAMES)
+
+        turn_counts = _derive_turn_counts(self._entries)
+        thinking_total = _derive_completed_thinking_seconds(self._entries) + _derive_inflight_thinking_seconds(
+            self._metrics, now=now
+        )
+        status_text, thinking_agent = _status_text(self._metrics, spinner_frame=spinner_frame)
+        mode_text = _mode_text(self._metrics)
+        uptime_text = _uptime_text(self._metrics, now=now)
+
+        separator_attr = curses.A_DIM
+        mode_attr = (
+            self._with_optional_color(PAIR_MODE, bold=True)
+            if mode_text.startswith("collab")
+            else curses.A_DIM
+        )
+        if thinking_agent == "claude":
+            status_attr = self._with_optional_color(PAIR_CLAUDE, bold=True)
+        elif thinking_agent == "codex":
+            status_attr = self._with_optional_color(PAIR_CODEX, bold=True)
+        elif thinking_agent == "both":
+            status_attr = curses.A_BOLD
+        else:
+            status_attr = curses.A_DIM
+
+        required_groups: list[list[tuple[str, int]]] = [
+            [(status_text, status_attr)],
+            [(" | ", separator_attr), (mode_text, mode_attr)],
+        ]
+        optional_groups: list[list[tuple[str, int]]] = [
+            [(" | ", separator_attr), (f"think {_format_elapsed(thinking_total)}", curses.A_DIM)],
+            [(" | ", separator_attr), (f"up {uptime_text}", curses.A_DIM)],
+            [(" | ", separator_attr), (f"claude:{turn_counts['claude']}", self._with_optional_color(PAIR_CLAUDE))],
+            [(" | ", separator_attr), (f"codex:{turn_counts['codex']}", self._with_optional_color(PAIR_CODEX))],
+        ]
+
+        display_width = max(0, width - 1)
+        groups = required_groups + optional_groups
+        while _segment_groups_width(groups) > display_width and len(groups) > len(required_groups):
+            groups.pop()
+
+        segments = [segment for group in groups for segment in group]
+        self._draw_segments(stdscr, row=row, width=width, segments=segments)
 
     def _render_log(self, stdscr: "curses._CursesWindow", *, top: int, height: int, width: int) -> None:
         """Render tail of wrapped log lines in available space."""
@@ -455,6 +515,37 @@ class SidebarApplication:
         except curses.error:
             pass
 
+    def _with_optional_color(self, pair_id: int, *, bold: bool = False) -> int:
+        """Build an attribute mask with optional color support."""
+        attr = curses.A_BOLD if bold else curses.A_NORMAL
+        if self._colors_enabled:
+            attr |= curses.color_pair(pair_id)
+        return attr
+
+    @staticmethod
+    def _draw_segments(
+        stdscr: "curses._CursesWindow",
+        *,
+        row: int,
+        width: int,
+        segments: list[tuple[str, int]],
+    ) -> None:
+        """Draw one row from colored text segments."""
+        if row < 0:
+            return
+        max_width = max(0, width - 1)
+        column = 0
+        for text, attr in segments:
+            if not text or column >= max_width:
+                break
+            remaining = max_width - column
+            clipped = text[:remaining]
+            try:
+                stdscr.addnstr(row, column, clipped, remaining, attr)
+            except curses.error:
+                continue
+            column += len(clipped)
+
 
 def _parse_event_line(raw_line: str) -> LogEntry | None:
     """Parse one JSONL event line into a sidebar log entry."""
@@ -552,72 +643,135 @@ def _merge_known_fields(destination: dict[str, Any], source: dict[str, Any]) -> 
         destination[key] = value
 
 
-def _format_metrics_lines(metrics: dict[str, Any], *, now: datetime) -> list[str]:
-    """Build fixed metrics-strip lines."""
-    target = metrics.get("target")
+def _mode_text(metrics: dict[str, Any]) -> str:
+    """Return normalized mode text for the strip."""
     mode = metrics.get("mode")
     collab_turn = metrics.get("collab_turn")
     collab_max = metrics.get("collab_max")
-    uptime_start = metrics.get("uptime_start")
-    uptime = _format_elapsed(0.0)
-    if isinstance(uptime_start, str):
-        parsed = _parse_iso8601(uptime_start)
-        if parsed is not None:
-            uptime = _format_elapsed((now - parsed.astimezone(now.tzinfo or timezone.utc)).total_seconds())
-
     if mode == "collab" and isinstance(collab_turn, int) and isinstance(collab_max, int):
-        mode_text = f"collab {collab_turn}/{collab_max}"
-    elif mode == "collab" and isinstance(collab_max, int):
-        mode_text = f"collab ?/{collab_max}"
-    else:
-        mode_text = str(mode or "normal")
+        return f"collaborative {collab_turn}/{collab_max}"
+    if mode == "collab" and isinstance(collab_max, int):
+        return f"collaborative ?/{collab_max}"
+    return str(mode or "normal")
 
+
+def _uptime_text(metrics: dict[str, Any], *, now: datetime) -> str:
+    """Return uptime text derived from metrics uptime_start."""
+    uptime_start = metrics.get("uptime_start")
+    if not isinstance(uptime_start, str):
+        return _format_elapsed(0.0)
+    parsed = _parse_iso8601(uptime_start)
+    if parsed is None:
+        return _format_elapsed(0.0)
+    elapsed = (now - parsed.astimezone(now.tzinfo or timezone.utc)).total_seconds()
+    return _format_elapsed(elapsed)
+
+
+def _status_text(metrics: dict[str, Any], *, spinner_frame: str) -> tuple[str, str | None]:
+    """Return strip status text and active thinking agent label."""
+    active_agent = _active_thinking_agent(metrics)
+    if active_agent is None:
+        return ". idle", None
+    if active_agent == "both":
+        return f"{spinner_frame} both", "both"
+    return f"{spinner_frame} {active_agent}", active_agent
+
+
+def _active_thinking_agent(metrics: dict[str, Any]) -> str | None:
+    """Return the active thinking agent name, both, or none."""
     agents = metrics.get("agents")
     if not isinstance(agents, dict):
-        agents = {}
-    claude = agents.get("claude", {})
-    codex = agents.get("codex", {})
-    if not isinstance(claude, dict):
-        claude = {}
-    if not isinstance(codex, dict):
-        codex = {}
+        return None
 
-    line_one = f"target: {target or 'claude'} | mode: {mode_text} | uptime: {uptime}"
-    line_two = f"claude: {_agent_status_text(claude, now)} | codex: {_agent_status_text(codex, now)}"
-    line_three = (
-        "last: "
-        f"claude {_last_stats_text(claude)} | "
-        f"codex {_last_stats_text(codex)}"
-    )
-    return [line_one, line_two, line_three]
+    thinking_agents: list[str] = []
+    for agent in ("claude", "codex"):
+        data = agents.get(agent)
+        if isinstance(data, dict) and data.get("status") == "thinking":
+            thinking_agents.append(agent)
+
+    if not thinking_agents:
+        return None
+    if len(thinking_agents) == 1:
+        return thinking_agents[0]
+
+    # prefer the most recently started thinking agent if timestamps are valid
+    latest_agent: str | None = None
+    latest_time: datetime | None = None
+    for agent in thinking_agents:
+        data = agents.get(agent)
+        if not isinstance(data, dict):
+            continue
+        raw_since = data.get("thinking_since")
+        if not isinstance(raw_since, str):
+            continue
+        parsed_since = _parse_iso8601(raw_since)
+        if parsed_since is None:
+            continue
+        if latest_time is None or parsed_since > latest_time:
+            latest_time = parsed_since
+            latest_agent = agent
+
+    return latest_agent or "both"
 
 
-def _agent_status_text(agent_metrics: dict[str, Any], now: datetime) -> str:
-    """Format one agent status line segment."""
-    status = agent_metrics.get("status")
-    if status != "thinking":
-        return "idle"
-
-    thinking_since = agent_metrics.get("thinking_since")
-    if isinstance(thinking_since, str):
-        parsed = _parse_iso8601(thinking_since)
-        if parsed is not None:
-            elapsed = (now - parsed.astimezone(now.tzinfo or timezone.utc)).total_seconds()
-            return f"thinking {_format_elapsed(elapsed)}"
-    return "thinking"
+def _derive_turn_counts(entries: Iterable[LogEntry]) -> dict[str, int]:
+    """Count completed turns per agent from recv events."""
+    counts = {"claude": 0, "codex": 0}
+    for entry in entries:
+        if entry.kind == "recv" and entry.agent in counts:
+            counts[entry.agent] += 1
+    return counts
 
 
-def _last_stats_text(agent_metrics: dict[str, Any]) -> str:
-    """Format last words/latency metrics for one agent."""
-    words = agent_metrics.get("last_words")
-    latency = agent_metrics.get("last_latency_s")
+def _derive_completed_thinking_seconds(entries: Iterable[LogEntry]) -> float:
+    """Sum thinking durations by pairing sent(target) to recv(agent)."""
+    sent_starts: dict[str, datetime] = {}
+    total = 0.0
+    for entry in entries:
+        if entry.kind == "sent" and entry.target in {"claude", "codex"}:
+            sent_starts[entry.target] = entry.timestamp
+            continue
+        if entry.kind != "recv" or entry.agent not in {"claude", "codex"}:
+            continue
+        start = sent_starts.pop(entry.agent, None)
+        if start is None:
+            continue
+        duration = (entry.timestamp - start).total_seconds()
+        if duration > 0:
+            total += duration
+    return total
 
-    words_text = f"{words}w" if isinstance(words, int) else "-w"
-    if isinstance(latency, (int, float)):
-        latency_text = f"{latency:.1f}s"
-    else:
-        latency_text = "-s"
-    return f"{words_text} {latency_text}"
+
+def _derive_inflight_thinking_seconds(metrics: dict[str, Any], *, now: datetime) -> float:
+    """Return current in-flight thinking time from metrics thinking_since."""
+    agents = metrics.get("agents")
+    if not isinstance(agents, dict):
+        return 0.0
+
+    total = 0.0
+    for agent in ("claude", "codex"):
+        data = agents.get(agent)
+        if not isinstance(data, dict) or data.get("status") != "thinking":
+            continue
+        raw_since = data.get("thinking_since")
+        if not isinstance(raw_since, str):
+            continue
+        parsed_since = _parse_iso8601(raw_since)
+        if parsed_since is None:
+            continue
+        elapsed = (now - parsed_since.astimezone(now.tzinfo or timezone.utc)).total_seconds()
+        if elapsed > 0:
+            total += elapsed
+    return total
+
+
+def _segment_groups_width(groups: Iterable[Iterable[tuple[str, int]]]) -> int:
+    """Return display width for grouped segments."""
+    width = 0
+    for group in groups:
+        for text, _attr in group:
+            width += len(text)
+    return width
 
 
 def _format_elapsed(seconds: float) -> str:

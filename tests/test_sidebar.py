@@ -8,15 +8,21 @@ from unittest.mock import patch
 from claodex.sidebar import (
     LogEntry,
     SidebarApplication,
+    _active_thinking_agent,
     _as_text,
     _collect_capped_output,
     _default_metrics_snapshot,
+    _derive_completed_thinking_seconds,
+    _derive_inflight_thinking_seconds,
+    _derive_turn_counts,
     _format_elapsed,
-    _format_metrics_lines,
     _load_metrics_snapshot,
     _looks_interactive_command,
+    _mode_text,
     _parse_iso8601,
     _parse_event_line,
+    _status_text,
+    _uptime_text,
 )
 
 
@@ -107,27 +113,58 @@ def test_looks_interactive_command_detects_known_interactive_tools():
     assert _looks_interactive_command("echo hello") is False
 
 
-def test_format_metrics_lines_includes_collab_and_uptime():
+def test_mode_and_uptime_text_format_collab_state():
     metrics = _default_metrics_snapshot()
-    metrics["target"] = "codex"
     metrics["mode"] = "collab"
     metrics["collab_turn"] = 2
     metrics["collab_max"] = 8
     metrics["uptime_start"] = "2026-02-24T01:00:00+00:00"
-    metrics["agents"]["claude"]["status"] = "thinking"
-    metrics["agents"]["claude"]["thinking_since"] = "2026-02-24T01:29:50+00:00"
-    metrics["agents"]["claude"]["last_words"] = 320
-    metrics["agents"]["claude"]["last_latency_s"] = 2.4
-    metrics["agents"]["codex"]["last_words"] = 100
-    metrics["agents"]["codex"]["last_latency_s"] = 1.1
 
     now = datetime(2026, 2, 24, 1, 30, 0, tzinfo=timezone.utc)
-    lines = _format_metrics_lines(metrics, now=now)
-    assert "target: codex" in lines[0]
-    assert "mode: collab 2/8" in lines[0]
-    assert "uptime: 30m00s" in lines[0]
-    assert "claude: thinking 10s" in lines[1]
-    assert "last: claude 320w 2.4s" in lines[2]
+    assert _mode_text(metrics) == "collaborative 2/8"
+    assert _uptime_text(metrics, now=now) == "30m00s"
+
+    metrics["collab_turn"] = None
+    assert _mode_text(metrics) == "collaborative ?/8"
+
+
+def test_status_text_and_active_thinking_agent():
+    metrics = _default_metrics_snapshot()
+    assert _active_thinking_agent(metrics) is None
+    assert _status_text(metrics, spinner_frame="|") == (". idle", None)
+
+    metrics["agents"]["claude"]["status"] = "thinking"
+    metrics["agents"]["claude"]["thinking_since"] = "2026-02-24T01:30:00+00:00"
+    assert _active_thinking_agent(metrics) == "claude"
+    assert _status_text(metrics, spinner_frame="|") == ("| claude", "claude")
+
+    metrics["agents"]["codex"]["status"] = "thinking"
+    metrics["agents"]["codex"]["thinking_since"] = "2026-02-24T01:30:10+00:00"
+    assert _active_thinking_agent(metrics) == "codex"
+
+
+def test_derive_turn_counts_and_completed_thinking_seconds():
+    base = datetime(2026, 2, 24, 1, 30, 0, tzinfo=timezone.utc)
+    entries = [
+        LogEntry(timestamp=base, kind="sent", message="-> claude", target="claude"),
+        LogEntry(timestamp=base.replace(second=5), kind="recv", message="<- claude", agent="claude"),
+        LogEntry(timestamp=base.replace(second=10), kind="sent", message="-> codex", target="codex"),
+        LogEntry(timestamp=base.replace(second=14), kind="recv", message="<- codex", agent="codex"),
+        LogEntry(timestamp=base.replace(second=20), kind="recv", message="<- codex", agent="codex"),
+    ]
+    assert _derive_turn_counts(entries) == {"claude": 1, "codex": 2}
+    assert _derive_completed_thinking_seconds(entries) == 9.0
+
+
+def test_derive_inflight_thinking_seconds_uses_active_thinking_since():
+    metrics = _default_metrics_snapshot()
+    metrics["agents"]["claude"]["status"] = "thinking"
+    metrics["agents"]["claude"]["thinking_since"] = "2026-02-24T01:29:48+00:00"
+    metrics["agents"]["codex"]["status"] = "idle"
+    metrics["agents"]["codex"]["thinking_since"] = "2026-02-24T01:29:00+00:00"
+
+    now = datetime(2026, 2, 24, 1, 30, 0, tzinfo=timezone.utc)
+    assert _derive_inflight_thinking_seconds(metrics, now=now) == 12.0
 
 
 def test_format_elapsed_handles_boundary_and_large_values():
@@ -195,6 +232,87 @@ def test_handle_input_key_page_scroll_adjusts_offset(tmp_path):
     assert app._scroll_offset == 0
     app._handle_input_key(curses.KEY_NPAGE)
     assert app._scroll_offset == 0
+
+
+def test_render_metrics_strip_drops_optional_fields_on_narrow_width(tmp_path):
+    class _StdScr:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int, str]] = []
+
+        def addnstr(self, row: int, column: int, text: str, _n: int, _attr: int) -> None:
+            self.calls.append((row, column, text))
+
+    def _line_text(calls: list[tuple[int, int, str]]) -> str:
+        return "".join(text for _row, _column, text in sorted(calls, key=lambda item: item[1]))
+
+    workspace = tmp_path / "workspace"
+    app = SidebarApplication(workspace)
+    app._metrics["mode"] = "collab"
+    app._metrics["collab_turn"] = 2
+    app._metrics["collab_max"] = 8
+    app._metrics["agents"]["codex"]["status"] = "thinking"
+    app._metrics["agents"]["codex"]["thinking_since"] = "2026-02-24T01:29:55+00:00"
+    app._entries.extend(
+        [
+            LogEntry(
+                timestamp=datetime(2026, 2, 24, 1, 29, 50, tzinfo=timezone.utc),
+                kind="recv",
+                message="<- claude",
+                agent="claude",
+            ),
+            LogEntry(
+                timestamp=datetime(2026, 2, 24, 1, 29, 51, tzinfo=timezone.utc),
+                kind="recv",
+                message="<- codex",
+                agent="codex",
+            ),
+        ]
+    )
+    now = datetime(2026, 2, 24, 1, 30, 0, tzinfo=timezone.utc)
+
+    wide = _StdScr()
+    app._render_metrics_strip(wide, row=0, width=120, now=now)
+    wide_line = _line_text(wide.calls)
+    assert "collaborative 2/8" in wide_line
+    assert "think " in wide_line
+    assert "up " in wide_line
+    assert "claude:1" in wide_line
+    assert "codex:1" in wide_line
+
+    narrow = _StdScr()
+    app._render_metrics_strip(narrow, row=0, width=35, now=now)
+    narrow_line = _line_text(narrow.calls)
+    assert "collaborative 2/8" in narrow_line
+    assert "think " not in narrow_line
+    assert "up " not in narrow_line
+    assert "claude:" not in narrow_line
+    assert "codex:" not in narrow_line
+
+
+def test_render_metrics_strip_spinner_uses_ascii_frames(tmp_path):
+    class _StdScr:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int, str]] = []
+
+        def addnstr(self, row: int, column: int, text: str, _n: int, _attr: int) -> None:
+            self.calls.append((row, column, text))
+
+    def _line_text(calls: list[tuple[int, int, str]]) -> str:
+        return "".join(text for _row, _column, text in sorted(calls, key=lambda item: item[1]))
+
+    workspace = tmp_path / "workspace"
+    app = SidebarApplication(workspace)
+    app._metrics["agents"]["claude"]["status"] = "thinking"
+    app._metrics["agents"]["claude"]["thinking_since"] = "2026-02-24T01:29:55+00:00"
+
+    now = datetime(2026, 2, 24, 1, 30, 0, tzinfo=timezone.utc)
+    frame_one = _StdScr()
+    app._render_metrics_strip(frame_one, row=0, width=80, now=now)
+    frame_two = _StdScr()
+    app._render_metrics_strip(frame_two, row=0, width=80, now=now)
+
+    assert _line_text(frame_one.calls).startswith("⠋ claude")
+    assert _line_text(frame_two.calls).startswith("⠙ claude")
 
 
 def test_render_log_applies_scroll_offset_and_clamps(tmp_path):

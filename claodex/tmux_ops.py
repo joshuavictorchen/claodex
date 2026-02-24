@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .constants import SESSION_NAME
+from .constants import LAYOUT_BOTTOM_PERCENT, LAYOUT_SIDEBAR_PERCENT, SESSION_NAME
 from .errors import ClaodexError
 
 
@@ -102,8 +102,7 @@ def create_session(workspace_root: Path, session_name: str = SESSION_NAME) -> Pa
         ]
     )
 
-    # split into top (78%) / bottom (22%) first
-    # use `-l 22%` for cross-version tmux compatibility; `-p 22` fails on tmux 3.4
+    # split into top / bottom — use `-l N%` for cross-version tmux compatibility
     _run_tmux(
         [
             "split-window",
@@ -111,7 +110,7 @@ def create_session(workspace_root: Path, session_name: str = SESSION_NAME) -> Pa
             "-t",
             f"{session_name}:0.0",
             "-l",
-            "22%",
+            f"{LAYOUT_BOTTOM_PERCENT}%",
             "-c",
             str(workspace_root),
         ]
@@ -153,7 +152,7 @@ def create_session(workspace_root: Path, session_name: str = SESSION_NAME) -> Pa
 
     # split top row into left/right panes
     _run_tmux(["split-window", "-h", "-t", top_pane_id, "-c", str(workspace_root)])
-    # split bottom row into input/sidebar (left 63% / right 37%)
+    # split bottom row into input (left) / sidebar (right)
     _run_tmux(
         [
             "split-window",
@@ -161,7 +160,7 @@ def create_session(workspace_root: Path, session_name: str = SESSION_NAME) -> Pa
             "-t",
             bottom_pane_id,
             "-l",
-            "37%",
+            f"{LAYOUT_SIDEBAR_PERCENT}%",
             "-c",
             str(workspace_root),
         ]
