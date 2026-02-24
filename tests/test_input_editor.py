@@ -162,6 +162,46 @@ def test_enter_submits_normally():
     assert event.value == "hello"
 
 
+def test_enter_writes_separator_between_input_blocks():
+    """Enter writes a dim horizontal separator before the next prompt."""
+    stream = iter(b"hello\r")
+    writes: list[str] = []
+
+    def fake_read(_fd, _n):
+        try:
+            return bytes([next(stream)])
+        except StopIteration:
+            return b""
+
+    def fake_select(rlist, _w, _x, _timeout=None):
+        return rlist, [], []
+
+    editor = InputEditor()
+    with (
+        patch("os.read", side_effect=fake_read),
+        patch("select.select", side_effect=fake_select),
+        patch("os.get_terminal_size", return_value=os.terminal_size((12, 24))),
+        patch("sys.stdin") as mock_stdin,
+        patch.object(editor, "_render", return_value=(1, 0)),
+        patch.object(editor, "_clear_render"),
+        patch.object(editor, "_write", side_effect=writes.append),
+    ):
+        mock_stdin.fileno.return_value = FAKE_FD
+        event = editor._read_loop(
+            prompt="test > ",
+            buffer=[],
+            cursor=0,
+            history_index=None,
+            pasting=False,
+            previous_render=(1, 0),
+        )
+
+    assert event.kind == "submit"
+    assert event.value == "hello"
+    separator = "\r\x1b[2K\033[90m" + ("─" * 11) + "\033[0m\r\n"
+    assert separator in "".join(writes)
+
+
 def test_plain_multiline_submits_first_line():
     """Without paste brackets, \\r submits immediately (first line only)."""
     event = _feed_bytes(b"first\rsecond\r")
@@ -219,13 +259,13 @@ def test_up_moves_to_previous_line():
     assert event.value == "aXbc\ndef"
 
 
-def test_up_on_first_line_goes_home():
-    """Up arrow on the first line of multi-line buffer moves cursor to 0."""
+def test_up_on_first_visual_row_stays_column():
+    """Up arrow clamps at first visual row and keeps the current column."""
     buf = list("abc\ndef")
-    # cursor at 2 (first line, col 2), up → home (0), type 'X' → "Xabc\ndef"
+    # cursor at 2 (first visual row, col 2), up stays in-place, then insert
     event = _feed_bytes(b"\x1b[AX\r", buffer=buf, cursor=2)
     assert event.kind == "submit"
-    assert event.value == "Xabc\ndef"
+    assert event.value == "abXc\ndef"
 
 
 def test_down_moves_to_next_line():
@@ -238,13 +278,13 @@ def test_down_moves_to_next_line():
     assert event.value == "abc\ndXef"
 
 
-def test_down_on_last_line_goes_end():
-    """Down arrow on the last line of multi-line buffer moves cursor to end."""
+def test_down_on_last_visual_row_stays_column():
+    """Down arrow clamps at last visual row and keeps the current column."""
     buf = list("abc\ndef")
-    # cursor at 5 (second line, col 1), down → end (7), type 'X' → "abc\ndefX"
-    event = _feed_bytes(b"\x1b[BX\r", buffer=buf, cursor=5)
+    # cursor at 6 (last visual row, col 2), down stays in-place, then insert
+    event = _feed_bytes(b"\x1b[BX\r", buffer=buf, cursor=6)
     assert event.kind == "submit"
-    assert event.value == "abc\ndefX"
+    assert event.value == "abc\ndeXf"
 
 
 def test_up_clamps_to_shorter_line():
@@ -264,12 +304,56 @@ def test_up_single_line_uses_history():
     assert event.value == "previous"
 
 
+def test_up_single_visual_row_non_empty_uses_history():
+    """History navigation still applies for non-empty single visual-row input."""
+    event = _feed_bytes(
+        b"\x1b[A\r",
+        buffer=list("draft"),
+        cursor=5,
+        history=["previous"],
+    )
+    assert event.kind == "submit"
+    assert event.value == "previous"
+
+
 def test_down_single_line_uses_history():
     """Down arrow restores empty buffer after cycling through history."""
     # start with history, up to load it, then down to clear
     event = _feed_bytes(b"\x1b[A\x1b[B\r", history=["prev"])
     assert event.kind == "submit"
     assert event.value == ""
+
+
+def test_up_moves_to_previous_wrapped_visual_row():
+    """Up arrow moves across soft-wrapped visual rows (not just newlines)."""
+    buf = list("abcdefghij")
+    with patch("os.get_terminal_size", return_value=os.terminal_size((12, 24))):
+        event = _feed_bytes(b"\x1b[AX\r", buffer=buf, cursor=7)
+    assert event.kind == "submit"
+    assert event.value == "abXcdefghij"
+
+
+def test_down_moves_to_next_wrapped_visual_row():
+    """Down arrow moves across soft-wrapped visual rows (not just newlines)."""
+    buf = list("abcdefghij")
+    with patch("os.get_terminal_size", return_value=os.terminal_size((12, 24))):
+        event = _feed_bytes(b"\x1b[BX\r", buffer=buf, cursor=2)
+    assert event.kind == "submit"
+    assert event.value == "abcdefgXhij"
+
+
+def test_wrapped_visual_rows_take_precedence_over_history():
+    """When input wraps to multiple visual rows, up/down move cursor not history."""
+    buf = list("abcdefghij")
+    with patch("os.get_terminal_size", return_value=os.terminal_size((12, 24))):
+        event = _feed_bytes(
+            b"\x1b[AX\r",
+            buffer=buf,
+            cursor=7,
+            history=["previous"],
+        )
+    assert event.kind == "submit"
+    assert event.value == "abXcdefghij"
 
 
 def test_render_continuation_indents_to_prompt_width():
@@ -294,14 +378,14 @@ def test_render_continuation_indents_to_prompt_width():
 
 
 def test_colored_prompt_uses_agent_colors():
-    assert _colored_prompt("claude") == "\033[38;5;216mclaude ❯ \033[0m"
-    assert _colored_prompt("codex") == "\033[38;5;116m codex ❯ \033[0m"
-    assert _colored_prompt("collab") == "\033[90mcollab ❯ \033[0m"
+    assert _colored_prompt("claude") == "\033[38;5;216mclaude ❯ │ \033[0m"
+    assert _colored_prompt("codex") == "\033[38;5;116m codex ❯ │ \033[0m"
+    assert _colored_prompt("collab") == "\033[90mcollab ❯ │ \033[0m"
 
 
 def test_visible_len_ignores_ansi_escape_sequences():
     prompt = _colored_prompt("claude")
-    assert _visible_len(prompt) == len("claude ❯ ")
+    assert _visible_len(prompt) == len("claude ❯ │ ")
 
 
 def test_visible_len_handles_empty_and_plain_strings():
@@ -317,7 +401,7 @@ def test_visible_len_handles_multiple_ansi_sequences():
 def test_colored_prompt_visible_width_matches_rendered_prompt():
     claude_width = _visible_len(_colored_prompt("claude"))
     codex_width = _visible_len(_colored_prompt("codex"))
-    assert claude_width == len("claude ❯ ")
+    assert claude_width == len("claude ❯ │ ")
     assert codex_width == claude_width
 
 
@@ -332,13 +416,13 @@ def test_render_continuation_uses_visible_prompt_width():
         patch.object(editor, "_write", side_effect=writes.append),
     ):
         editor._render(
-            prompt="\033[38;5;116m codex ❯ \033[0m",
+            prompt="\033[38;5;116m codex ❯ │ \033[0m",
             buffer=list("line1\nline2"),
             cursor=len("line1\nline2"),
             previous_render=(1, 0),
         )
 
-    assert "\r\n         line2" in "".join(writes)
+    assert "\r\n           line2" in "".join(writes)
 
 
 def test_render_wrap_inserts_continuation_prefix_on_overflow():
@@ -476,3 +560,40 @@ def test_idle_callback_suppressed_while_bracketed_paste_active():
     assert idle_calls["count"] == 0
     assert event.kind == "submit"
     assert event.value == "partial"
+
+
+def test_read_loop_rerenders_when_terminal_width_changes():
+    """Loop polls terminal width and re-renders immediately on resize."""
+    editor = InputEditor()
+    stream = iter(b"\r")
+
+    def fake_read(_fd, _n):
+        try:
+            return bytes([next(stream)])
+        except StopIteration:
+            return b""
+
+    def fake_select(rlist, _w, _x, _timeout=None):
+        return rlist, [], []
+
+    with (
+        patch("select.select", side_effect=fake_select),
+        patch("os.read", side_effect=fake_read),
+        patch("claodex.input_editor._terminal_columns", side_effect=[20, 30, 30]),
+        patch("sys.stdin") as mock_stdin,
+        patch.object(editor, "_write"),
+        patch.object(editor, "_clear_render"),
+        patch.object(editor, "_render", return_value=(1, 0)) as render_mock,
+    ):
+        mock_stdin.fileno.return_value = FAKE_FD
+        event = editor._read_loop(
+            prompt="test > ",
+            buffer=list("abc"),
+            cursor=3,
+            history_index=None,
+            pasting=False,
+            previous_render=(1, 0),
+        )
+
+    assert event.kind == "submit"
+    render_mock.assert_called_once_with("test > ", ["a", "b", "c"], 3, (1, 0))

@@ -309,7 +309,9 @@ class ClaodexApplication:
             return load_participants(workspace_root)
 
         print("waiting for agent registration (press Enter in each agent pane)...")
-        return self._wait_for_registration(workspace_root)
+        participants = self._wait_for_registration(workspace_root)
+        self._clear_terminal_screen()
+        return participants
 
     def _cursors_missing(self, workspace_root: Path) -> bool:
         """Check whether any cursor files are absent.
@@ -625,6 +627,7 @@ class ClaodexApplication:
                         f"{seed_response.agent} initiated collaboration",
                         agent=seed_response.agent,
                     )
+                    self._clear_terminal_line()
                     self._run_collab(
                         workspace_root,
                         router,
@@ -663,6 +666,7 @@ class ClaodexApplication:
                         if text.startswith("/collab"):
                             request = parse_collab_request(text, default_start=target)
                             self._clear_watches(router)
+                            self._clear_terminal_line()
                             self._run_collab(
                                 workspace_root,
                                 router,
@@ -816,6 +820,14 @@ class ClaodexApplication:
         if not sys.stdout.isatty():
             return
         sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
+
+    @staticmethod
+    def _clear_terminal_screen() -> None:
+        """Clear the active terminal screen in TTY mode."""
+        if not sys.stdout.isatty():
+            return
+        sys.stdout.write("\033[2J\033[H")
         sys.stdout.flush()
 
     def _run_collab(

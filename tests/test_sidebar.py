@@ -209,6 +209,7 @@ def test_render_log_applies_scroll_offset_and_clamps(tmp_path):
     with (
         patch.object(app, "_wrapped_log_lines", return_value=wrapped),
         patch.object(app, "_draw_line", side_effect=_capture_line),
+        patch.object(app, "_draw_scrollbar"),
     ):
         app._render_log(stdscr=object(), top=0, height=3, width=80)
     assert drawn == ["line-4", "line-5", "line-6"]
@@ -218,6 +219,7 @@ def test_render_log_applies_scroll_offset_and_clamps(tmp_path):
     with (
         patch.object(app, "_wrapped_log_lines", return_value=wrapped),
         patch.object(app, "_draw_line", side_effect=_capture_line),
+        patch.object(app, "_draw_scrollbar"),
     ):
         app._render_log(stdscr=object(), top=0, height=3, width=80)
     assert drawn == ["line-2", "line-3", "line-4"]
@@ -227,10 +229,106 @@ def test_render_log_applies_scroll_offset_and_clamps(tmp_path):
     with (
         patch.object(app, "_wrapped_log_lines", return_value=wrapped),
         patch.object(app, "_draw_line", side_effect=_capture_line),
+        patch.object(app, "_draw_scrollbar"),
     ):
         app._render_log(stdscr=object(), top=0, height=3, width=80)
     assert app._scroll_offset == 3
     assert drawn == ["line-1", "line-2", "line-3"]
+
+
+def test_render_log_reserves_right_column_and_draws_scrollbar_on_overflow(tmp_path):
+    workspace = tmp_path / "workspace"
+    app = SidebarApplication(workspace)
+    wrapped = [(f"line-{index}", 0) for index in range(1, 8)]
+    drawn_widths: list[int] = []
+    stdscr = object()
+
+    def _capture_line(_stdscr, _row, _text, width, _attr):  # noqa: ANN001
+        drawn_widths.append(width)
+
+    with (
+        patch.object(app, "_wrapped_log_lines", return_value=wrapped) as wrapped_mock,
+        patch.object(app, "_draw_line", side_effect=_capture_line),
+        patch.object(app, "_draw_scrollbar") as scrollbar_mock,
+    ):
+        app._render_log(stdscr=stdscr, top=2, height=3, width=20)
+
+    wrapped_mock.assert_called_once_with(19)
+    assert drawn_widths == [19, 19, 19]
+    scrollbar_mock.assert_called_once()
+    assert scrollbar_mock.call_args.args[0] is stdscr
+    assert scrollbar_mock.call_args.kwargs == {
+        "top": 2,
+        "height": 3,
+        "column": 19,
+        "scroll_offset": 0,
+        "max_scroll": 4,
+        "total_lines": 7,
+    }
+
+
+def test_render_log_hides_scrollbar_when_content_fits(tmp_path):
+    workspace = tmp_path / "workspace"
+    app = SidebarApplication(workspace)
+    wrapped = [("line-1", 0), ("line-2", 0)]
+
+    with (
+        patch.object(app, "_wrapped_log_lines", return_value=wrapped) as wrapped_mock,
+        patch.object(app, "_draw_line"),
+        patch.object(app, "_draw_scrollbar") as scrollbar_mock,
+    ):
+        app._render_log(stdscr=object(), top=0, height=3, width=20)
+
+    wrapped_mock.assert_called_once_with(19)
+    scrollbar_mock.assert_not_called()
+
+
+def test_draw_scrollbar_places_thumb_at_bottom_when_at_tail():
+    class _StdScr:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int, int, int]] = []
+
+        def addch(self, row: int, column: int, char: int, attr: int) -> None:
+            self.calls.append((row, column, char, attr))
+
+    stdscr = _StdScr()
+    with patch("claodex.sidebar.curses.ACS_VLINE", ord("|"), create=True):
+        SidebarApplication._draw_scrollbar(
+            stdscr,
+            top=10,
+            height=4,
+            column=7,
+            scroll_offset=0,
+            max_scroll=4,
+            total_lines=8,
+        )
+
+    bold_rows = [row for row, _column, _char, attr in stdscr.calls if attr == curses.A_BOLD]
+    assert bold_rows == [12, 13]
+
+
+def test_draw_scrollbar_places_thumb_at_top_when_scrolled_to_oldest():
+    class _StdScr:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int, int, int]] = []
+
+        def addch(self, row: int, column: int, char: int, attr: int) -> None:
+            self.calls.append((row, column, char, attr))
+
+    stdscr = _StdScr()
+    with patch("claodex.sidebar.curses.ACS_VLINE", ord("|"), create=True):
+        SidebarApplication._draw_scrollbar(
+            stdscr,
+            top=10,
+            height=4,
+            column=7,
+            scroll_offset=4,
+            max_scroll=4,
+            total_lines=8,
+        )
+
+    bold_rows = [row for row, _column, _char, attr in stdscr.calls if attr == curses.A_BOLD]
+    assert bold_rows == [10, 11]
 
 
 def test_append_shell_entry_uses_timezone_aware_local_timestamp(tmp_path):

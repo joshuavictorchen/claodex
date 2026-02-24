@@ -290,7 +290,8 @@ class SidebarApplication:
             return
         self._last_log_height = height
 
-        wrapped = self._wrapped_log_lines(max(1, width))
+        log_width = max(1, width - 1) if width > 1 else 1
+        wrapped = self._wrapped_log_lines(log_width)
         max_scroll = max(0, len(wrapped) - height)
         if self._scroll_offset > max_scroll:
             self._scroll_offset = max_scroll
@@ -302,7 +303,55 @@ class SidebarApplication:
             row = start_row + index
             if row < 0:
                 continue
-            self._draw_line(stdscr, row, line, width, attr)
+            self._draw_line(stdscr, row, line, log_width, attr)
+
+        if width > 1 and max_scroll > 0:
+            self._draw_scrollbar(
+                stdscr,
+                top=top,
+                height=height,
+                column=width - 1,
+                scroll_offset=self._scroll_offset,
+                max_scroll=max_scroll,
+                total_lines=len(wrapped),
+            )
+
+    @staticmethod
+    def _draw_scrollbar(
+        stdscr: "curses._CursesWindow",
+        *,
+        top: int,
+        height: int,
+        column: int,
+        scroll_offset: int,
+        max_scroll: int,
+        total_lines: int,
+    ) -> None:
+        """Draw a proportional scrollbar in a fixed right-side column."""
+        if height <= 0 or max_scroll <= 0 or total_lines <= 0:
+            return
+
+        thumb_size = max(1, min(height, int(round((height * height) / total_lines))))
+        travel = max(0, height - thumb_size)
+        # scroll_offset=0 means tail (newest logs), so thumb belongs at bottom
+        thumb_top = (
+            int(round(((max_scroll - scroll_offset) / max_scroll) * travel))
+            if travel > 0
+            else 0
+        )
+        thumb_bottom = thumb_top + thumb_size
+
+        for offset in range(height):
+            row = top + offset
+            try:
+                stdscr.addch(row, column, curses.ACS_VLINE, curses.A_DIM)
+            except curses.error:
+                continue
+            if thumb_top <= offset < thumb_bottom:
+                try:
+                    stdscr.addch(row, column, curses.ACS_VLINE, curses.A_BOLD)
+                except curses.error:
+                    continue
 
     def _render_shell_input(self, stdscr: "curses._CursesWindow", *, row: int, width: int) -> None:
         """Render shell prompt and move cursor."""

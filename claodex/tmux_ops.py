@@ -102,8 +102,8 @@ def create_session(workspace_root: Path, session_name: str = SESSION_NAME) -> Pa
         ]
     )
 
-    # split into top (75%) / bottom (25%) first
-    # use `-l 25%` for cross-version tmux compatibility; `-p 25` fails on tmux 3.4
+    # split into top (78%) / bottom (22%) first
+    # use `-l 22%` for cross-version tmux compatibility; `-p 22` fails on tmux 3.4
     _run_tmux(
         [
             "split-window",
@@ -111,7 +111,7 @@ def create_session(workspace_root: Path, session_name: str = SESSION_NAME) -> Pa
             "-t",
             f"{session_name}:0.0",
             "-l",
-            "25%",
+            "22%",
             "-c",
             str(workspace_root),
         ]
@@ -153,7 +153,7 @@ def create_session(workspace_root: Path, session_name: str = SESSION_NAME) -> Pa
 
     # split top row into left/right panes
     _run_tmux(["split-window", "-h", "-t", top_pane_id, "-c", str(workspace_root)])
-    # split bottom row into input/sidebar (left 60% / right 40%)
+    # split bottom row into input/sidebar (left 63% / right 37%)
     _run_tmux(
         [
             "split-window",
@@ -161,7 +161,7 @@ def create_session(workspace_root: Path, session_name: str = SESSION_NAME) -> Pa
             "-t",
             bottom_pane_id,
             "-l",
-            "40%",
+            "37%",
             "-c",
             str(workspace_root),
         ]

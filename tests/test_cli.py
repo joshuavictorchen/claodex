@@ -129,6 +129,49 @@ def test_clear_session_state_noop_when_no_files(tmp_path):
     application._clear_session_state(workspace)
 
 
+def test_load_or_wait_participants_clears_screen_only_after_wait_path(tmp_path):
+    """Screen clear runs only on fresh-start wait, not normal reattach load."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_file = tmp_path / "session.jsonl"
+    session_file.write_text("", encoding="utf-8")
+    participants = _build_participants(workspace, session_file)
+
+    application = ClaodexApplication()
+
+    # reattach path: participant files already exist, no wait, no clear
+    for agent in ("claude", "codex"):
+        path = participant_file(workspace, agent)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+
+    with (
+        patch("claodex.cli.load_participants", return_value=participants) as load_mock,
+        patch.object(application, "_wait_for_registration") as wait_mock,
+        patch.object(application, "_clear_terminal_screen") as clear_mock,
+    ):
+        result = application._load_or_wait_participants(workspace)
+
+    assert result == participants
+    load_mock.assert_called_once_with(workspace)
+    wait_mock.assert_not_called()
+    clear_mock.assert_not_called()
+
+    # fresh-start path: participant files missing, wait then clear
+    for agent in ("claude", "codex"):
+        participant_file(workspace, agent).unlink(missing_ok=True)
+
+    with (
+        patch.object(application, "_wait_for_registration", return_value=participants) as wait_mock,
+        patch.object(application, "_clear_terminal_screen") as clear_mock,
+    ):
+        result = application._load_or_wait_participants(workspace)
+
+    assert result == participants
+    wait_mock.assert_called_once_with(workspace)
+    clear_mock.assert_called_once_with()
+
+
 def test_bind_participants_to_layout_overrides_registered_panes(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -374,7 +417,7 @@ def test_run_repl_collab_command_clears_terminal_line(tmp_path):
         application._run_repl(workspace, participants)
 
     run_collab_mock.assert_called_once()
-    clear_line_mock.assert_called_once()
+    assert clear_line_mock.call_count == 2
 
 
 def test_run_repl_seeded_collab_clears_terminal_line(tmp_path):
@@ -416,7 +459,7 @@ def test_run_repl_seeded_collab_clears_terminal_line(tmp_path):
         application._run_repl(workspace, participants)
 
     run_collab_mock.assert_called_once()
-    clear_line_mock.assert_called_once()
+    assert clear_line_mock.call_count == 2
 
 
 def test_halt_listener_queues_interjection_without_halting():

@@ -17,17 +17,25 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 def _colored_prompt(target: str) -> str:
     """Return ANSI-colored prompt for the current target."""
     if target == "claude":
-        return "\033[38;5;216mclaude ❯ \033[0m"
+        return "\033[38;5;216mclaude ❯ │ \033[0m"
     if target == "codex":
-        return "\033[38;5;116m codex ❯ \033[0m"
+        return "\033[38;5;116m codex ❯ │ \033[0m"
     if target == "collab":
-        return "\033[90mcollab ❯ \033[0m"
-    return f"{target} ❯ "
+        return "\033[90mcollab ❯ │ \033[0m"
+    return f"{target} ❯ │ "
 
 
 def _visible_len(value: str) -> int:
     """Return display width excluding ANSI escape sequences."""
     return len(ANSI_ESCAPE_RE.sub("", value))
+
+
+def _terminal_columns(default: int = 80) -> int:
+    """Return terminal width, falling back when unavailable."""
+    try:
+        return max(1, os.get_terminal_size().columns)
+    except OSError:
+        return max(1, default)
 
 
 @dataclass(frozen=True)
@@ -36,6 +44,28 @@ class InputEvent:
 
     kind: str
     value: str = ""
+
+
+@dataclass(frozen=True)
+class _VisualRow:
+    """One rendered visual row mapped to buffer offsets."""
+
+    start: int
+    length: int
+
+
+@dataclass(frozen=True)
+class _VisualLayout:
+    """Shared prompt/buffer visual layout for render and cursor movement."""
+
+    text: str
+    lines: list[str]
+    segmented_lines: list[list[str]]
+    visual_per_line: list[int]
+    visual_rows: list[_VisualRow]
+    prompt_width: int
+    continuation_prefix: str
+    usable_per_row: int
 
 
 class InputEditor:
@@ -119,7 +149,14 @@ class InputEditor:
         """
         decoder = codecs.getincrementaldecoder("utf-8")()
         fd = sys.stdin.fileno()
+        last_columns = _terminal_columns()
         while True:
+            # keep render and wrap model in sync with terminal resizes
+            current_columns = _terminal_columns()
+            if current_columns != last_columns:
+                last_columns = current_columns
+                previous_render = self._render(prompt, buffer, cursor, previous_render)
+
             # use select with timeout to enable idle polling
             ready, _, _ = select.select([sys.stdin], [], [], idle_interval)
             if not ready:
@@ -175,6 +212,9 @@ class InputEditor:
             if key == "\r":
                 text = "".join(buffer)
                 self._write("\r\n")
+                columns = _terminal_columns()
+                separator = "─" * max(1, columns - 1)
+                self._write(f"\r\x1b[2K\033[90m{separator}\033[0m\r\n")
                 if text.strip():
                     self._history.append(text)
                 return InputEvent(kind="submit", value=text)
@@ -206,18 +246,9 @@ class InputEditor:
                 elif sequence in {"[D", "OD"}:  # left
                     cursor = max(cursor - 1, 0)
                 elif sequence in {"[A", "OA"}:  # up
-                    text = "".join(buffer)
-                    if "\n" in text:
-                        # multi-line: move cursor up one logical line
-                        before = text[:cursor]
-                        line_idx = before.count("\n")
-                        col = len(before.split("\n")[-1])
-                        if line_idx == 0:
-                            cursor = 0
-                        else:
-                            lines = text.split("\n")
-                            target_col = min(col, len(lines[line_idx - 1]))
-                            cursor = sum(len(lines[i]) + 1 for i in range(line_idx - 1)) + target_col
+                    layout = self._visual_layout(prompt, buffer)
+                    if len(layout.visual_rows) > 1:
+                        cursor = self._move_cursor_by_visual_row(layout, cursor, -1)
                     elif self._history:
                         # single-line: history back
                         if history_index is None:
@@ -227,18 +258,9 @@ class InputEditor:
                         buffer = list(self._history[history_index])
                         cursor = len(buffer)
                 elif sequence in {"[B", "OB"}:  # down
-                    text = "".join(buffer)
-                    if "\n" in text:
-                        # multi-line: move cursor down one logical line
-                        before = text[:cursor]
-                        line_idx = before.count("\n")
-                        col = len(before.split("\n")[-1])
-                        lines = text.split("\n")
-                        if line_idx >= len(lines) - 1:
-                            cursor = len(buffer)
-                        else:
-                            target_col = min(col, len(lines[line_idx + 1]))
-                            cursor = sum(len(lines[i]) + 1 for i in range(line_idx + 1)) + target_col
+                    layout = self._visual_layout(prompt, buffer)
+                    if len(layout.visual_rows) > 1:
+                        cursor = self._move_cursor_by_visual_row(layout, cursor, 1)
                     elif self._history:
                         # single-line: history forward
                         if history_index is None:
@@ -266,6 +288,90 @@ class InputEditor:
                 buffer.insert(cursor, key)
                 cursor += 1
                 previous_render = self._render(prompt, buffer, cursor, previous_render)
+
+    def _visual_layout(self, prompt: str, buffer: list[str]) -> _VisualLayout:
+        """Build one visual layout shared by render and cursor movement."""
+        text = "".join(buffer)
+        lines = text.split("\n")
+        if not lines:
+            lines = [""]
+
+        prompt_width = _visible_len(prompt)
+        continuation_prefix = " " * prompt_width
+        columns = _terminal_columns()
+        usable_per_row = max(1, columns - prompt_width)
+
+        segmented_lines: list[list[str]] = []
+        visual_rows: list[_VisualRow] = []
+        visual_per_line: list[int] = []
+        line_start = 0
+
+        for line_index, line in enumerate(lines):
+            if not line:
+                segments = [""]
+            else:
+                segments = [
+                    line[index : index + usable_per_row]
+                    for index in range(0, len(line), usable_per_row)
+                ]
+            segmented_lines.append(segments)
+            visual_per_line.append(len(segments))
+
+            for segment_index, segment in enumerate(segments):
+                segment_start = line_start + (segment_index * usable_per_row)
+                visual_rows.append(_VisualRow(start=segment_start, length=len(segment)))
+
+            line_start += len(line)
+            if line_index < len(lines) - 1:
+                line_start += 1
+
+        return _VisualLayout(
+            text=text,
+            lines=lines,
+            segmented_lines=segmented_lines,
+            visual_per_line=visual_per_line,
+            visual_rows=visual_rows,
+            prompt_width=prompt_width,
+            continuation_prefix=continuation_prefix,
+            usable_per_row=usable_per_row,
+        )
+
+    def _cursor_to_visual_position(self, layout: _VisualLayout, cursor: int) -> tuple[int, int]:
+        """Map cursor index to visual (row, col) using layout wrap rules."""
+        bounded_cursor = min(max(0, cursor), len(layout.text))
+        before_cursor = layout.text[:bounded_cursor]
+        cursor_line = before_cursor.count("\n")
+        cursor_col_in_line = len(before_cursor.split("\n")[-1])
+        cursor_line_length = len(layout.lines[cursor_line])
+        cursor_segments = layout.segmented_lines[cursor_line]
+
+        if (
+            cursor_col_in_line == cursor_line_length
+            and cursor_col_in_line > 0
+            and cursor_col_in_line % layout.usable_per_row == 0
+        ):
+            # keep boundary-at-end positions on the last occupied row
+            cursor_segment_index = len(cursor_segments) - 1
+            cursor_segment_col = layout.usable_per_row
+        else:
+            cursor_segment_index = cursor_col_in_line // layout.usable_per_row
+            cursor_segment_col = cursor_col_in_line % layout.usable_per_row
+
+        cursor_visual_row = sum(layout.visual_per_line[:cursor_line]) + cursor_segment_index
+        return cursor_visual_row, cursor_segment_col
+
+    @staticmethod
+    def _visual_position_to_cursor(layout: _VisualLayout, row: int, col: int) -> int:
+        """Map visual (row, col) back to cursor index."""
+        visual_row = layout.visual_rows[row]
+        clamped_col = min(max(0, col), visual_row.length)
+        return visual_row.start + clamped_col
+
+    def _move_cursor_by_visual_row(self, layout: _VisualLayout, cursor: int, step: int) -> int:
+        """Move cursor one visual row up/down while preserving visual column."""
+        current_row, current_col = self._cursor_to_visual_position(layout, cursor)
+        target_row = min(max(0, current_row + step), len(layout.visual_rows) - 1)
+        return self._visual_position_to_cursor(layout, target_row, current_col)
 
     def _read_escape_sequence(self) -> str:
         """Read a simple ANSI escape sequence body."""
@@ -305,64 +411,24 @@ class InputEditor:
             (total visual rows, cursor visual row) for this render.
         """
         prev_total, prev_cursor_row = previous_render
-        text = "".join(buffer)
-        lines = text.split("\n")
-        if not lines:
-            lines = [""]
-        prompt_width = _visible_len(prompt)
-        continuation_prefix = " " * prompt_width
-
-        columns = max(1, os.get_terminal_size().columns)
-        usable_per_row = max(1, columns - prompt_width)
-
-        # split each logical line into explicit render segments so output,
-        # row counting, and cursor placement share one wrap model
-        segmented_lines: list[list[str]] = []
-        for line in lines:
-            if not line:
-                segmented_lines.append([""])
-                continue
-            segments = [
-                line[index : index + usable_per_row]
-                for index in range(0, len(line), usable_per_row)
-            ]
-            segmented_lines.append(segments)
-
-        visual_per_line = [len(segments) for segments in segmented_lines]
-        visual_lines = sum(visual_per_line)
+        layout = self._visual_layout(prompt, buffer)
+        visual_lines = len(layout.visual_rows)
 
         # move from cursor's current visual row to render start, clear, reset
         self._move_up(prev_cursor_row)
         self._clear_n_lines(prev_total)
         self._move_up(prev_total - 1)
 
-        for line_index, segments in enumerate(segmented_lines):
+        for line_index, segments in enumerate(layout.segmented_lines):
             for segment_index, segment in enumerate(segments):
                 if line_index == 0 and segment_index == 0:
                     self._write(f"{prompt}{segment}")
                 else:
-                    self._write(f"\r\n{continuation_prefix}{segment}")
+                    self._write(f"\r\n{layout.continuation_prefix}{segment}")
 
-        # position cursor using the same explicit segment model
-        before_cursor = text[:cursor]
-        cursor_line = before_cursor.count("\n")
-        cursor_col_in_line = len(before_cursor.split("\n")[-1])
-        cursor_line_length = len(lines[cursor_line])
-        cursor_segments = segmented_lines[cursor_line]
-        if (
-            cursor_col_in_line == cursor_line_length
-            and cursor_col_in_line > 0
-            and cursor_col_in_line % usable_per_row == 0
-        ):
-            # keep boundary-at-end positions on the last occupied row
-            cursor_segment_index = len(cursor_segments) - 1
-            cursor_segment_col = usable_per_row
-        else:
-            cursor_segment_index = cursor_col_in_line // usable_per_row
-            cursor_segment_col = cursor_col_in_line % usable_per_row
-
-        cursor_visual_row = sum(visual_per_line[:cursor_line]) + cursor_segment_index
-        cursor_column = prompt_width + cursor_segment_col
+        # position cursor using the shared layout model
+        cursor_visual_row, cursor_segment_col = self._cursor_to_visual_position(layout, cursor)
+        cursor_column = layout.prompt_width + cursor_segment_col
 
         # move up from the last visual row to the cursor's visual row
         rows_up = (visual_lines - 1) - cursor_visual_row
