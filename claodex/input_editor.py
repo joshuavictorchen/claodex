@@ -73,7 +73,9 @@ class InputEditor:
 
     def __init__(self) -> None:
         """Initialize editor state."""
-        self._history: list[str] = []
+        # each entry is (prompt, text) so resize replay preserves the
+        # original prompt that was active when the input was submitted
+        self._history: list[tuple[str, str]] = []
 
     def read(
         self,
@@ -158,7 +160,7 @@ class InputEditor:
             if current_columns != last_columns:
                 last_columns = current_columns
                 self._write("\033[2J\033[H\033[3J")
-                self._replay_recent_history(prompt, limit=RESIZE_HISTORY_REPLAY_LIMIT)
+                self._replay_recent_history(limit=RESIZE_HISTORY_REPLAY_LIMIT)
                 # after full-screen clear + replay, reset render baseline
                 previous_render = (1, 0)
                 previous_render = self._render(prompt, buffer, cursor, previous_render)
@@ -223,7 +225,7 @@ class InputEditor:
                 self._write(f"\r\x1b[2K\033[90m{separator}\033[0m\r\n")
                 saved_history_buffer = None
                 if text.strip():
-                    self._history.append(text)
+                    self._history.append((prompt, text))
                 return InputEvent(kind="submit", value=text)
 
             if key in {"\x7f", "\b"}:
@@ -264,7 +266,7 @@ class InputEditor:
                             history_index = len(self._history) - 1
                         else:
                             history_index = max(0, history_index - 1)
-                        buffer = list(self._history[history_index])
+                        buffer = list(self._history[history_index][1])
                         cursor = len(buffer)
                 elif sequence in {"[B", "OB"}:  # down
                     layout = self._visual_layout(prompt, buffer)
@@ -285,7 +287,7 @@ class InputEditor:
                             saved_history_buffer = None
                         else:
                             history_index += 1
-                            buffer = list(self._history[history_index])
+                            buffer = list(self._history[history_index][1])
                             cursor = len(buffer)
                 elif sequence in {"[H", "OH", "[1~"}:  # home
                     cursor = 0
@@ -407,16 +409,17 @@ class InputEditor:
                 return len(layout.text)
         return self._visual_position_to_cursor(layout, target_row, current_col)
 
-    def _replay_recent_history(self, prompt: str, *, limit: int) -> None:
+    def _replay_recent_history(self, *, limit: int) -> None:
         """Replay recent submitted inputs after resize to keep view coherent."""
         if limit <= 0:
             return
-        for text in self._history[-limit:]:
-            layout = self._visual_layout(prompt, list(text))
+        for entry_prompt, text in self._history[-limit:]:
+            # use the prompt that was active when this entry was submitted
+            layout = self._visual_layout(entry_prompt, list(text))
             for line_index, segments in enumerate(layout.segmented_lines):
                 for segment_index, segment in enumerate(segments):
                     if line_index == 0 and segment_index == 0:
-                        self._write(f"{prompt}{segment}")
+                        self._write(f"{entry_prompt}{segment}")
                     else:
                         self._write(f"\r\n{layout.continuation_prefix}{segment}")
             columns = _terminal_columns()

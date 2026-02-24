@@ -41,7 +41,9 @@ def _feed_bytes(
 
     editor = InputEditor()
     if history:
-        editor._history = list(history)
+        # history entries are (prompt, text) tuples; tests pass bare strings
+        # for convenience so wrap them with a dummy prompt
+        editor._history = [("test > ", h) for h in history]
     noop_render = lambda *a, **kw: (1, 0)
 
     if buffer is None:
@@ -671,7 +673,7 @@ def test_read_loop_rerenders_when_terminal_width_changes():
 def test_read_loop_replays_recent_history_on_resize():
     """Resize path clears and redraws recent submitted history entries."""
     editor = InputEditor()
-    editor._history = ["earlier message"]
+    editor._history = [("test > ", "earlier message")]
     stream = iter(b"\r")
 
     def fake_read(_fd, _n):
@@ -706,3 +708,51 @@ def test_read_loop_replays_recent_history_on_resize():
     assert event.kind == "submit"
     assert "test > earlier message" in rendered
     assert "\033[2J\033[H\033[3J" in rendered
+
+
+def test_resize_replay_preserves_per_entry_prompts():
+    """Resize replay renders each history entry with its original prompt."""
+    claude_prompt = _colored_prompt("claude")
+    collab_prompt = _colored_prompt("collab")
+    editor = InputEditor()
+    editor._history = [
+        (claude_prompt, "hello world"),
+        (collab_prompt, "collab msg"),
+    ]
+    stream = iter(b"\r")
+
+    def fake_read(_fd, _n):
+        try:
+            return bytes([next(stream)])
+        except StopIteration:
+            return b""
+
+    def fake_select(rlist, _w, _x, _timeout=None):
+        return rlist, [], []
+
+    with (
+        patch("select.select", side_effect=fake_select),
+        patch("os.read", side_effect=fake_read),
+        # first call returns initial width, second returns different width to
+        # trigger resize, remaining calls service render/layout
+        patch("claodex.input_editor._terminal_columns", side_effect=[20, 30, 30, 30, 30, 30, 30]),
+        patch("sys.stdin") as mock_stdin,
+        patch.object(editor, "_write") as write_mock,
+        patch.object(editor, "_clear_render"),
+        patch.object(editor, "_render", return_value=(1, 0)),
+    ):
+        mock_stdin.fileno.return_value = FAKE_FD
+        editor._read_loop(
+            prompt=collab_prompt,
+            buffer=list("x"),
+            cursor=1,
+            history_index=None,
+            pasting=False,
+            previous_render=(1, 0),
+        )
+
+    rendered = "".join(call.args[0] for call in write_mock.call_args_list)
+    # the claude entry must render with the claude prompt, not the current
+    # collab prompt — this is the exact bug that was fixed
+    assert f"{claude_prompt}hello world" in rendered
+    assert f"{collab_prompt}collab msg" in rendered

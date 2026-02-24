@@ -324,7 +324,7 @@ class SidebarApplication:
 
         separator_attr = curses.A_DIM
         mode_attr = (
-            self._with_optional_color(PAIR_MODE, bold=True)
+            self._with_optional_color(PAIR_MODE)
             if mode_text == "collaborative"
             else self._with_optional_color(PAIR_SHELL)
         )
