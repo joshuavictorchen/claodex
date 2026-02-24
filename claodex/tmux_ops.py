@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -219,6 +220,14 @@ def start_agent_processes(layout: PaneLayout, workspace_root: Path) -> None:
     claude_command = f"cd {ws} && {env_prefix} claude"
     _run_tmux(["send-keys", "-t", layout.codex, codex_command, "C-m"])
     _run_tmux(["send-keys", "-t", layout.claude, claude_command, "C-m"])
+
+
+def start_sidebar_process(layout: PaneLayout, workspace_root: Path) -> None:
+    """Launch the sidebar process in the sidebar pane."""
+    exe = shlex_quote(sys.executable)
+    ws = shlex_quote(str(workspace_root))
+    command = f"{exe} -m claodex sidebar {ws}"
+    _run_tmux(["send-keys", "-t", layout.sidebar, command, "C-m"])
 
 
 def prefill_skill_commands(layout: PaneLayout) -> None:

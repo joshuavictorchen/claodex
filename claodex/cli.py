@@ -56,6 +56,7 @@ from .tmux_ops import (
     resolve_layout,
     session_exists,
     start_agent_processes,
+    start_sidebar_process,
 )
 from .ui import UIEventBus
 
@@ -210,6 +211,9 @@ class ClaodexApplication:
                 f"input={layout.input}  sidebar={layout.sidebar}"
             )
 
+            print("launching sidebar process...")
+            start_sidebar_process(layout, workspace_root)
+
             # capture baseline shell commands before launching agents
             baseline = {
                 "codex": pane_current_command(layout.codex),
@@ -270,6 +274,7 @@ class ClaodexApplication:
         participants = self._load_or_wait_participants(workspace_root)
         participants = self._bind_participants_to_layout(participants, layout)
         self._validate_registered_panes(participants)
+        self._ensure_sidebar_running(layout, workspace_root)
 
         # init cursors on fresh start, validate on reattach
         if self._cursors_missing(workspace_root):
@@ -385,6 +390,23 @@ class ClaodexApplication:
                 dead.append(f"{participant.agent} ({participant.tmux_pane})")
         if dead:
             raise ClaodexError(f"registered panes are not alive: {', '.join(dead)}")
+
+    def _ensure_sidebar_running(self, layout: PaneLayout, workspace_root: Path) -> None:
+        """Ensure sidebar pane is alive and running the sidebar process.
+
+        Args:
+            layout: Resolved tmux pane layout.
+            workspace_root: Workspace root path.
+        """
+        if not is_pane_alive(layout.sidebar):
+            raise ClaodexError(f"sidebar pane is not alive: {layout.sidebar}")
+
+        current = pane_current_command(layout.sidebar)
+        if current is not None and current.startswith("python"):
+            return
+
+        print("sidebar process not running; relaunching...")
+        start_sidebar_process(layout, workspace_root)
 
     def _wait_for_agents_ready(
         self, layout: PaneLayout, baseline: dict[str, str | None]

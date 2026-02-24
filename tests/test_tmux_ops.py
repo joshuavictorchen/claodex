@@ -14,6 +14,7 @@ from claodex.tmux_ops import (
     paste_content,
     prefill_skill_commands,
     resolve_layout,
+    start_sidebar_process,
 )
 
 
@@ -81,6 +82,31 @@ def test_prefill_skill_commands_types_without_submitting(monkeypatch):
     assert calls == [
         ["send-keys", "-t", "%1", "-l", "--", "$claodex"],
         ["send-keys", "-t", "%2", "-l", "--", "/claodex"],
+    ]
+
+
+def test_start_sidebar_process_sends_sidebar_launch_command(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run_tmux(args: list[str], **kwargs):
+        _ = kwargs
+        calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("claodex.tmux_ops._run_tmux", fake_run_tmux)
+    monkeypatch.setattr("claodex.tmux_ops.sys.executable", "/usr/bin/python3")
+
+    layout = PaneLayout(codex="%1", claude="%2", input="%3", sidebar="%4")
+    start_sidebar_process(layout, Path("/workspace"))
+
+    assert calls == [
+        [
+            "send-keys",
+            "-t",
+            "%4",
+            "'/usr/bin/python3' -m claodex sidebar '/workspace'",
+            "C-m",
+        ]
     ]
 
 

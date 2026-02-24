@@ -92,8 +92,8 @@ claodex/
 #### tmux Ops (`claodex/tmux_ops.py`)
 
 - **Owns**: all tmux subprocess commands (session/pane lifecycle, content injection)
-- **Key files**: `tmux_ops.py` (session create/kill, layout resolution, paste_content, _submit_delay)
-- **Interface**: `create_session()`, `paste_content()`, `resolve_layout()`, `is_pane_alive()`, `PaneLayout`
+- **Key files**: `tmux_ops.py` (session create/kill, layout resolution, sidebar launch, paste_content, _submit_delay)
+- **Interface**: `create_session()`, `start_sidebar_process()`, `paste_content()`, `resolve_layout()`, `is_pane_alive()`, `PaneLayout`
 - **Depends on**: constants, errors
 - **Depended on by**: cli
 - **Invariants**: paste uses `load-buffer -` (stdin) + `paste-buffer -p -t` (atomic, avoids tmux CLI-argument size limits, and `-p` skips bracketed-paste escapes that Codex's TUI mangles); submit delay scales with payload size (base 0.3s, +0.1s/1000 chars over 2000, capped at 2s)
@@ -141,7 +141,7 @@ State on disk:
 | Feature | Primary Location | Notes |
 | --- | --- | --- |
 | Startup / session creation | `cli.py:_run_start` | Creates tmux, launches agents, installs skills |
-| Reattach | `cli.py:_run_attach` | Resolves layout, validates panes, resumes REPL |
+| Reattach | `cli.py:_run_attach` | Resolves layout, validates agent panes, relaunches sidebar if not running, resumes REPL |
 | Normal message sending | `cli.py:_run_repl`, `router.py:send_user_message` | Fire-and-forget send; registers/updates one pending watch per target (superseding prior watch) |
 | Agent-initiated collab detection | `cli.py:_make_idle_callback`, `router.py:poll_for_response` | Idle poll checks pending watches for `[COLLAB]`, seeds `_run_collab` on trigger |
 | Collab mode | `cli.py:_run_collab` | Automated multi-turn; uses `Router.send_routed_message` + `wait_for_response` |
