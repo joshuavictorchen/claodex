@@ -32,14 +32,9 @@ When you're done:
 ### Resume after exit or WSL restart
 
 Graceful exits (`/quit`, `Ctrl+D`) kill the agents and tmux session. To start
-a fresh session that picks up each agent's conversation history:
+a fresh session that picks up each agent's conversation history, launch as usual
+but use `/resume` manually before calling the `claodex` skill.
 
-```bash
-claodex                    # start a new session
-# once both agents are running, send each a short context primer:
-#   codex ❯ summarize your last session and continue where you left off
-#   claude ❯ summarize your last session and continue where you left off
-```
 
 Both agents retain their full JSONL session logs across restarts. Sending a
 primer message lets them re-orient from their own history without claodex

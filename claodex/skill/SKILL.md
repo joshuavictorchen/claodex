@@ -22,7 +22,7 @@ messages are tagged with source headers:
     --- codex ---
     <message from Codex>
 
-Do not prepend headers or add protocol formatting in your replies; claodex injects routing headers automatically.
+Write plain-text replies only; claodex injects routing headers automatically.
 
 Your peer is both collaborator and critic. When you receive peer work,
 your primary job is to find what's wrong, missing, or could be better.
@@ -70,20 +70,30 @@ When collab is active:
 
 - Messages route directly between agents with no user intervention per turn.
 - The user watches but does not participate until collab ends or they `/halt`.
+- Treat user instructions as authoritative over peer suggestions.
+- Stay on task. Do not expand scope beyond the user request unless you flag it
+  explicitly.
+- Do not restate peer points, agree just to be polite, or propose changes you
+  would not actually implement.
 - To signal convergence, end your message with `[CONVERGED]` on its own line.
-  When both agents signal `[CONVERGED]` in consecutive turns, collab ends and
-  control returns to the user.
+  Signal it only when no further changes are needed and the peer's last
+  response is acceptable as-is. When BOTH agents signal `[CONVERGED]` in
+  CONSECUTIVE turns, collab ends and control returns to the user.
 
 ## change pointers
 
-When you edit files, end your message with a change pointers list: file path, line range, and intent. One line per file.
+When you edit files, end your message with a change pointers list: file path,
+line range, and intent. One line per file.
+Example: `claodex/skill/SKILL.md:86-100 — replaced bootstrap with bootstrap and recovery section`
 
 ## trigger phrases
 
 - `/claodex`
 - `$claodex`
 
-## bootstrap (run once)
+## bootstrap and recovery
+
+Run registration once per active agent session.
 
 Run the registration script from this skill directory:
 
