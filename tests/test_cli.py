@@ -89,7 +89,7 @@ def test_bind_participants_to_layout_overrides_registered_panes(tmp_path):
             registered_at="2026-02-23T00:00:00-05:00",
         ),
     )
-    layout = PaneLayout(codex="%0", claude="%2", cli="%1")
+    layout = PaneLayout(codex="%0", claude="%2", input="%1", sidebar="%3")
 
     application = ClaodexApplication()
     bound = application._bind_participants_to_layout(participants, layout)

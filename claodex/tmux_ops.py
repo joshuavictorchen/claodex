@@ -18,7 +18,8 @@ class PaneLayout:
 
     codex: str
     claude: str
-    cli: str
+    input: str
+    sidebar: str
 
 
 def _run_tmux(args: list[str], *, capture_output: bool = True, check: bool = True) -> subprocess.CompletedProcess:
@@ -79,7 +80,8 @@ def create_session(workspace_root: Path, session_name: str = SESSION_NAME) -> Pa
     Layout:
         top-left: codex
         top-right: claude
-        bottom: cli
+        bottom-left: input
+        bottom-right: sidebar
     """
     if session_exists(session_name):
         raise ClaodexError(
@@ -99,8 +101,8 @@ def create_session(workspace_root: Path, session_name: str = SESSION_NAME) -> Pa
         ]
     )
 
-    # split into top (60%) / bottom (40%) first
-    # use `-l 40%` for cross-version tmux compatibility; `-p 40` fails on tmux 3.4
+    # split into top (75%) / bottom (25%) first
+    # use `-l 25%` for cross-version tmux compatibility; `-p 25` fails on tmux 3.4
     _run_tmux(
         [
             "split-window",
@@ -108,7 +110,7 @@ def create_session(workspace_root: Path, session_name: str = SESSION_NAME) -> Pa
             "-t",
             f"{session_name}:0.0",
             "-l",
-            "40%",
+            "25%",
             "-c",
             str(workspace_root),
         ]
@@ -116,6 +118,19 @@ def create_session(workspace_root: Path, session_name: str = SESSION_NAME) -> Pa
 
     # split top row into left/right panes
     _run_tmux(["split-window", "-h", "-t", f"{session_name}:0.0", "-c", str(workspace_root)])
+    # split bottom row into input/sidebar (left 60% / right 40%)
+    _run_tmux(
+        [
+            "split-window",
+            "-h",
+            "-t",
+            f"{session_name}:0.1",
+            "-l",
+            "40%",
+            "-c",
+            str(workspace_root),
+        ]
+    )
 
     return resolve_layout(session_name=session_name)
 
@@ -127,7 +142,7 @@ def resolve_layout(session_name: str = SESSION_NAME) -> PaneLayout:
         session_name: tmux session name.
 
     Returns:
-        Pane ids mapped to codex/claude/cli roles.
+        Pane ids mapped to codex/claude/input/sidebar roles.
     """
     result = _run_tmux(
         [
@@ -152,24 +167,39 @@ def resolve_layout(session_name: str = SESSION_NAME) -> PaneLayout:
             }
         )
 
-    if len(panes) != 3:
-        raise ClaodexError(f"expected 3 panes in session '{session_name}', found {len(panes)}")
+    if len(panes) != 4:
+        raise ClaodexError(f"expected 4 panes in session '{session_name}', found {len(panes)}")
 
-    panes_by_top = sorted(panes, key=lambda item: (item["top"], item["left"]))
-    top_row = [pane for pane in panes_by_top if pane["top"] == panes_by_top[0]["top"]]
+    rows: dict[int, list[dict]] = {}
+    for pane in panes:
+        rows.setdefault(pane["top"], []).append(pane)
+
+    if len(rows) != 2:
+        raise ClaodexError("could not resolve pane rows")
+
+    ordered_rows = sorted(rows.items(), key=lambda item: item[0])
+    top_row = ordered_rows[0][1]
+    bottom_row = ordered_rows[1][1]
+
     if len(top_row) != 2:
         raise ClaodexError("could not resolve top-row panes")
-
-    bottom_candidates = [pane for pane in panes if pane not in top_row]
-    if len(bottom_candidates) != 1:
-        raise ClaodexError("could not resolve cli pane")
+    if len(bottom_row) != 2:
+        raise ClaodexError("could not resolve bottom-row panes")
 
     top_row_sorted = sorted(top_row, key=lambda item: item["left"])
+    bottom_row_sorted = sorted(bottom_row, key=lambda item: item["left"])
+
     codex_pane = top_row_sorted[0]["pane_id"]
     claude_pane = top_row_sorted[1]["pane_id"]
-    cli_pane = bottom_candidates[0]["pane_id"]
+    input_pane = bottom_row_sorted[0]["pane_id"]
+    sidebar_pane = bottom_row_sorted[1]["pane_id"]
 
-    return PaneLayout(codex=codex_pane, claude=claude_pane, cli=cli_pane)
+    return PaneLayout(
+        codex=codex_pane,
+        claude=claude_pane,
+        input=input_pane,
+        sidebar=sidebar_pane,
+    )
 
 
 def start_agent_processes(layout: PaneLayout, workspace_root: Path) -> None:
@@ -310,7 +340,7 @@ def paste_content(pane_id: str, content: str) -> None:
 
 def attach_cli_pane(layout: PaneLayout, session_name: str = SESSION_NAME) -> None:
     """Focus the CLI pane to keep user input in the bottom pane."""
-    _run_tmux(["select-pane", "-t", layout.cli])
+    _run_tmux(["select-pane", "-t", layout.input])
     _run_tmux(["display-message", "-t", f"{session_name}:0", "claodex ready"])
 
 

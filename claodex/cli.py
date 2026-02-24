@@ -165,11 +165,11 @@ class ClaodexApplication:
 
         Startup sequence:
         1. clear stale participant files
-        2. create tmux session with 3 panes
+        2. create tmux session with 4 panes
         3. launch agent processes (codex, claude)
         4. wait for agents to be ready (pane command transition)
         5. prepopulate skill commands in each pane
-        6. paste REPL command into CLI pane
+        6. paste REPL command into input pane
         7. attach to tmux — user presses Enter in agent panes to register
         8. REPL (attach mode) waits for registration, binds layout, inits cursors
 
@@ -199,7 +199,11 @@ class ClaodexApplication:
             print("creating tmux session...")
             layout = create_session(workspace_root, session_name=SESSION_NAME)
             created_session = True
-            print(f"  panes: codex={layout.codex}  claude={layout.claude}  cli={layout.cli}")
+            print(
+                "  panes: "
+                f"codex={layout.codex}  claude={layout.claude}  "
+                f"input={layout.input}  sidebar={layout.sidebar}"
+            )
 
             # capture baseline shell commands before launching agents
             baseline = {
@@ -214,13 +218,13 @@ class ClaodexApplication:
             print("prefilling skill commands...")
             prefill_skill_commands(layout)
 
-            # paste REPL into CLI pane and attach immediately so the user
+            # paste REPL into input pane and attach immediately so the user
             # can see the agent panes and press Enter to trigger registration
             attach_cli_pane(layout)
             exe = shlex.quote(sys.executable)
             ws = shlex.quote(str(workspace_root))
             repl_cmd = f"{exe} -m claodex attach {ws}"
-            paste_content(layout.cli, repl_cmd)
+            paste_content(layout.input, repl_cmd)
 
             # hand the user's terminal to tmux
             if os.environ.get("TMUX"):

@@ -2,7 +2,7 @@ Last updated: 2026-02-24
 
 ## Overview
 
-claodex is a multi-agent tmux router that enables Claude Code and OpenAI Codex to collaborate from a single CLI. It manages a tmux session with three panes (Codex, Claude, CLI), routes messages between agents via JSONL session log parsing, and supports automated multi-turn collaboration. Runtime REPL output is emitted as structured UI events/metrics under `.claodex/ui/` for the sidebar phase. Python 3.12+, no external dependencies beyond tmux and the agent CLIs.
+claodex is a multi-agent tmux router that enables Claude Code and OpenAI Codex to collaborate from a single CLI. It manages a tmux session with four panes (Codex, Claude, input, sidebar), routes messages between agents via JSONL session log parsing, and supports automated multi-turn collaboration. Runtime REPL output is emitted as structured UI events/metrics under `.claodex/ui/`. Python 3.12+, no external dependencies beyond tmux and the agent CLIs.
 
 ## Directory Structure
 
