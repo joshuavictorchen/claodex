@@ -329,11 +329,11 @@ class SidebarApplication:
             else self._with_optional_color(PAIR_SHELL)
         )
         if thinking_agent == "claude":
-            status_attr = self._with_optional_color(PAIR_CLAUDE, bold=True)
+            status_attr = self._with_optional_color(PAIR_CLAUDE)
         elif thinking_agent == "codex":
-            status_attr = self._with_optional_color(PAIR_CODEX, bold=True)
+            status_attr = self._with_optional_color(PAIR_CODEX)
         elif thinking_agent == "both":
-            status_attr = curses.A_BOLD
+            status_attr = curses.A_NORMAL
         else:
             status_attr = curses.A_DIM
 
