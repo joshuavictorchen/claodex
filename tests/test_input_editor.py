@@ -272,8 +272,8 @@ def test_down_single_line_uses_history():
     assert event.value == ""
 
 
-def test_render_continuation_uses_crlf_prefix():
-    """Multi-line render uses CRLF before continuation prefix."""
+def test_render_continuation_indents_to_prompt_width():
+    """Multi-line render aligns continuation lines under message text."""
     editor = InputEditor()
     writes: list[str] = []
 
@@ -290,7 +290,7 @@ def test_render_continuation_uses_crlf_prefix():
             previous_render=(1, 0),
         )
 
-    assert "\r\n... line2" in "".join(writes)
+    assert "\r\n       line2" in "".join(writes)
 
 
 def test_read_prefill_submits_existing_text():

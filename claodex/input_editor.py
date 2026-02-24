@@ -290,13 +290,14 @@ class InputEditor:
         lines = text.split("\n")
         if not lines:
             lines = [""]
+        continuation_prefix = " " * len(prompt)
 
         columns = os.get_terminal_size().columns
 
         # count visual rows per logical line, accounting for terminal wrapping
         visual_per_line: list[int] = []
         for i, line in enumerate(lines):
-            prefix_len = len(prompt) if i == 0 else 4  # "... " continuation
+            prefix_len = len(prompt) if i == 0 else len(continuation_prefix)
             char_count = prefix_len + len(line)
             visual_per_line.append(max(1, -(-char_count // columns)))
         visual_lines = sum(visual_per_line)
@@ -310,12 +311,12 @@ class InputEditor:
             if line_index == 0:
                 self._write(f"{prompt}{line}")
             else:
-                self._write(f"\r\n... {line}")
+                self._write(f"\r\n{continuation_prefix}{line}")
 
         # position cursor accounting for wrapping
         cursor_line = text[:cursor].count("\n")
         cursor_col_in_line = len(text[:cursor].split("\n")[-1])
-        prefix_len = len(prompt) if cursor_line == 0 else 4
+        prefix_len = len(prompt) if cursor_line == 0 else len(continuation_prefix)
         absolute_col = prefix_len + cursor_col_in_line
 
         # visual row and column of the cursor within the full render;
