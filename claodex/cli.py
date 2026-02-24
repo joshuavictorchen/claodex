@@ -827,7 +827,7 @@ class ClaodexApplication:
         """Clear the active terminal screen in TTY mode."""
         if not sys.stdout.isatty():
             return
-        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.write("\033[2J\033[H\033[3J")
         sys.stdout.flush()
 
     def _run_collab(

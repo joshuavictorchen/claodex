@@ -12,17 +12,18 @@ import tty
 from dataclasses import dataclass
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+RESIZE_HISTORY_REPLAY_LIMIT = 50
 
 
 def _colored_prompt(target: str) -> str:
     """Return ANSI-colored prompt for the current target."""
     if target == "claude":
-        return "\033[38;5;216mclaude ❯ │ \033[0m"
+        return "\033[38;5;216mclaude ❯ \033[0m"
     if target == "codex":
-        return "\033[38;5;116m codex ❯ │ \033[0m"
+        return "\033[38;5;116m codex ❯ \033[0m"
     if target == "collab":
-        return "\033[90mcollab ❯ │ \033[0m"
-    return f"{target} ❯ │ "
+        return "\033[90mcollab ❯ \033[0m"
+    return f"{target} ❯ "
 
 
 def _visible_len(value: str) -> int:
@@ -150,11 +151,17 @@ class InputEditor:
         decoder = codecs.getincrementaldecoder("utf-8")()
         fd = sys.stdin.fileno()
         last_columns = _terminal_columns()
+        saved_history_buffer: list[str] | None = None
+        saved_history_cursor: int = 0
         while True:
             # keep render and wrap model in sync with terminal resizes
             current_columns = _terminal_columns()
             if current_columns != last_columns:
                 last_columns = current_columns
+                self._write("\033[2J\033[H\033[3J")
+                self._replay_recent_history(prompt, limit=RESIZE_HISTORY_REPLAY_LIMIT)
+                # after full-screen clear + replay, reset render baseline
+                previous_render = (1, 0)
                 previous_render = self._render(prompt, buffer, cursor, previous_render)
 
             # use select with timeout to enable idle polling
@@ -215,6 +222,7 @@ class InputEditor:
                 columns = _terminal_columns()
                 separator = "─" * max(1, columns - 1)
                 self._write(f"\r\x1b[2K\033[90m{separator}\033[0m\r\n")
+                saved_history_buffer = None
                 if text.strip():
                     self._history.append(text)
                 return InputEvent(kind="submit", value=text)
@@ -252,6 +260,8 @@ class InputEditor:
                     elif self._history:
                         # single-line: history back
                         if history_index is None:
+                            saved_history_buffer = list(buffer)
+                            saved_history_cursor = cursor
                             history_index = len(self._history) - 1
                         else:
                             history_index = max(0, history_index - 1)
@@ -267,8 +277,13 @@ class InputEditor:
                             pass
                         elif history_index >= len(self._history) - 1:
                             history_index = None
-                            buffer = []
-                            cursor = 0
+                            if saved_history_buffer is not None:
+                                buffer = list(saved_history_buffer)
+                                cursor = saved_history_cursor
+                            else:
+                                buffer = []
+                                cursor = 0
+                            saved_history_buffer = None
                         else:
                             history_index += 1
                             buffer = list(self._history[history_index])
@@ -371,7 +386,29 @@ class InputEditor:
         """Move cursor one visual row up/down while preserving visual column."""
         current_row, current_col = self._cursor_to_visual_position(layout, cursor)
         target_row = min(max(0, current_row + step), len(layout.visual_rows) - 1)
+        if target_row == current_row:
+            if step < 0:
+                return 0
+            if step > 0:
+                return len(layout.text)
         return self._visual_position_to_cursor(layout, target_row, current_col)
+
+    def _replay_recent_history(self, prompt: str, *, limit: int) -> None:
+        """Replay recent submitted inputs after resize to keep view coherent."""
+        if limit <= 0:
+            return
+        for text in self._history[-limit:]:
+            layout = self._visual_layout(prompt, list(text))
+            for line_index, segments in enumerate(layout.segmented_lines):
+                for segment_index, segment in enumerate(segments):
+                    if line_index == 0 and segment_index == 0:
+                        self._write(f"{prompt}{segment}")
+                    else:
+                        self._write(f"\r\n{layout.continuation_prefix}{segment}")
+            columns = _terminal_columns()
+            separator = "─" * max(1, columns - 1)
+            self._write("\r\n")
+            self._write(f"\r\x1b[2K\033[90m{separator}\033[0m\r\n")
 
     def _read_escape_sequence(self) -> str:
         """Read a simple ANSI escape sequence body."""

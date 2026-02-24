@@ -462,6 +462,15 @@ def test_run_repl_seeded_collab_clears_terminal_line(tmp_path):
     assert clear_line_mock.call_count == 2
 
 
+def test_clear_terminal_screen_clears_scrollback_when_tty():
+    with patch("sys.stdout") as mock_stdout:
+        mock_stdout.isatty.return_value = True
+        ClaodexApplication._clear_terminal_screen()
+
+    mock_stdout.write.assert_called_once_with("\033[2J\033[H\033[3J")
+    mock_stdout.flush.assert_called_once_with()
+
+
 def test_halt_listener_queues_interjection_without_halting():
     """Non-/halt input during collab is queued and does not stop collab."""
     application = ClaodexApplication()

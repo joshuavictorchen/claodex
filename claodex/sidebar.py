@@ -6,6 +6,7 @@ import curses
 import json
 import shlex
 import subprocess
+import sys
 import textwrap
 import time
 from collections import deque
@@ -23,6 +24,7 @@ SHELL_TIMEOUT_SECONDS = 30
 SHELL_MAX_LINES = 100
 SHELL_MAX_BYTES = 10 * 1024
 INTERACTIVE_COMMANDS = frozenset({"vim", "nvim", "nano", "less", "more", "top", "htop"})
+LOG_PAGE_SCROLL_LINES = 3
 
 PAIR_CODEX = 1
 PAIR_CLAUDE = 2
@@ -66,6 +68,7 @@ class SidebarApplication:
 
     def run(self) -> int:
         """Run sidebar app until interrupted."""
+        self._clear_terminal_scrollback()
         try:
             curses.wrapper(self._curses_main)
         except KeyboardInterrupt:
@@ -175,11 +178,11 @@ class SidebarApplication:
     def _handle_input_key(self, key: str | int) -> None:
         """Update shell input buffer or run command."""
         if key == curses.KEY_PPAGE:
-            self._scroll_offset += max(1, self._last_log_height)
+            self._scroll_offset += LOG_PAGE_SCROLL_LINES
             return
 
         if key == curses.KEY_NPAGE:
-            self._scroll_offset = max(0, self._scroll_offset - max(1, self._last_log_height))
+            self._scroll_offset = max(0, self._scroll_offset - LOG_PAGE_SCROLL_LINES)
             return
 
         if key in ("\n", "\r") or key == curses.KEY_ENTER:
@@ -198,6 +201,14 @@ class SidebarApplication:
 
         if isinstance(key, str) and key.isprintable():
             self._input_buffer += key
+
+    @staticmethod
+    def _clear_terminal_scrollback() -> None:
+        """Clear terminal display and scrollback before curses takes control."""
+        if not sys.stdout.isatty():
+            return
+        sys.stdout.write("\033[2J\033[H\033[3J")
+        sys.stdout.flush()
 
     def _run_shell_command(self, command: str) -> None:
         """Execute one shell command and append output to local log."""

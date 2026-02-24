@@ -185,12 +185,12 @@ def test_handle_input_key_page_scroll_adjusts_offset(tmp_path):
     app._last_log_height = 4
 
     app._handle_input_key(curses.KEY_PPAGE)
-    assert app._scroll_offset == 4
+    assert app._scroll_offset == 3
     app._handle_input_key(curses.KEY_PPAGE)
-    assert app._scroll_offset == 8
+    assert app._scroll_offset == 6
 
     app._handle_input_key(curses.KEY_NPAGE)
-    assert app._scroll_offset == 4
+    assert app._scroll_offset == 3
     app._handle_input_key(curses.KEY_NPAGE)
     assert app._scroll_offset == 0
     app._handle_input_key(curses.KEY_NPAGE)
@@ -340,3 +340,18 @@ def test_append_shell_entry_uses_timezone_aware_local_timestamp(tmp_path):
     assert entry.kind == "shell"
     assert entry.timestamp.tzinfo is not None
     assert entry.timestamp.utcoffset() is not None
+
+
+def test_run_clears_scrollback_before_starting_curses(tmp_path):
+    workspace = tmp_path / "workspace"
+    app = SidebarApplication(workspace)
+
+    with (
+        patch.object(app, "_clear_terminal_scrollback") as clear_mock,
+        patch("claodex.sidebar.curses.wrapper", side_effect=KeyboardInterrupt) as wrapper_mock,
+    ):
+        exit_code = app.run()
+
+    assert exit_code == 0
+    clear_mock.assert_called_once_with()
+    wrapper_mock.assert_called_once()
