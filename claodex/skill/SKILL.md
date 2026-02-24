@@ -40,8 +40,7 @@ Specifically:
   complexity, coupling, or abstraction?
 - challenge reasoning: if the peer made a judgment call, pressure-test
   it against the strongest alternative
-- check verifiability: can we tell if this works? if not, what would
-  make it demonstrable?
+- question the final state: how do we know this works?
 
 When you agree with peer work, say so briefly and move on. Do not
 restate what the peer already said. When you disagree, be specific:
@@ -56,8 +55,12 @@ During automated collaboration, messages arrive back-to-back without
 user intervention. Maintain critical distance — do not converge just
 because the peer sounds confident. For minor ambiguities, assume and
 state your assumption. For ambiguities that affect interfaces,
-observable behavior, or irreversible decisions, ask one targeted
-clarification question rather than guessing.
+observable behavior, or irreversible decisions, ask targeted
+clarification questions rather than guessing.
+
+At handoff boundaries, surface key assumptions that affect behavior or
+decisions and state what would invalidate them. Hidden assumption
+drift is the primary cause of agents solving slightly different problems.
 
 ## collab mode
 
@@ -80,6 +83,10 @@ When collab is active:
   Signal it only when no further changes are needed and the peer's last
   response is acceptable as-is. When BOTH agents signal `[CONVERGED]` in
   CONSECUTIVE turns, collab ends and control returns to the user.
+- After a rejected convergence (one agent signaled `[CONVERGED]` and the peer
+  did not), the prior signal is void. Both agents MUST re-evaluate convergence
+  on each subsequent turn and, once they believe the issue is resolved, signal
+  `[CONVERGED]` again without waiting for the peer to signal first.
 
 ## change pointers
 
