@@ -91,6 +91,32 @@ def _drain_queue(q: queue.Queue[str]) -> list[str]:
     return items
 
 
+
+def _strip_routing_signals(text: str) -> str:
+    """Strip all trailing [COLLAB] and [CONVERGED] signals from message text.
+
+    Loops until no trailing signal remains, so order and stacking don't matter.
+    """
+    signals = (COLLAB_SIGNAL, CONVERGE_SIGNAL)
+    result = text.rstrip()
+    changed = True
+    while changed:
+        changed = False
+        for signal in signals:
+            stripped = _strip_trailing_signal(result, signal)
+            if stripped != result:
+                result = stripped.rstrip()
+                changed = True
+    return result
+
+
+def _format_local_time(ts: datetime) -> str:
+    """Format a datetime as local ``H:MM AM/PM``."""
+    local = ts.astimezone()
+    hour = local.strftime("%I").lstrip("0") or "12"
+    return f"{hour}:{local.strftime('%M %p')}"
+
+
 @dataclass(frozen=True)
 class CollabRequest:
     """Parsed `/collab` command payload."""
@@ -774,6 +800,7 @@ class ClaodexApplication:
                         agent=response.agent,
                         text=clean_text,
                         source_cursor=response.source_cursor,
+                        received_at=response.received_at,
                     )
                     # stash the seed turn for the REPL to pick up
                     self._collab_seed = (pending, clean_response)
@@ -1197,7 +1224,10 @@ class ClaodexApplication:
         stop_reason: str,
         initiated_by: str = "user",
     ) -> Path:
-        """Persist collab exchange log.
+        """Persist collab exchange log as a group-chat transcript.
+
+        Each message appears exactly once in chronological order with a
+        ``**source** · H:MM AM/PM`` header line.
 
         Args:
             workspace_root: Workspace root for state output.
@@ -1226,35 +1256,36 @@ class ClaodexApplication:
             f"Turns: {turns}",
             f"Stop reason: {stop_reason}",
             "",
+            "---",
+            "",
         ]
 
-        round_number = 1
-        for index in range(0, len(turn_records), 2):
-            lines.extend(
-                [
-                    f"## Round {round_number}",
-                    "",
-                    f"### → {turn_records[index][0].target_agent}",
-                    turn_records[index][0].sent_text,
-                    "",
-                    f"### ← {turn_records[index][1].agent}",
-                    turn_records[index][1].text,
-                    "",
-                ]
-            )
+        # build flat chronological message list from structured blocks:
+        # (source, body, timestamp or None)
+        messages: list[tuple[str, str, datetime | None]] = []
 
-            if index + 1 < len(turn_records):
-                lines.extend(
-                    [
-                        f"### → {turn_records[index + 1][0].target_agent}",
-                        turn_records[index + 1][0].sent_text,
-                        "",
-                        f"### ← {turn_records[index + 1][1].agent}",
-                        turn_records[index + 1][1].text,
-                        "",
-                    ]
-                )
-            round_number += 1
+        for i, (pending, response) in enumerate(turn_records):
+            if i == 0:
+                # first turn: all blocks are new (delta context + user message)
+                for source, body in pending.blocks:
+                    messages.append((source, body, pending.sent_at))
+            else:
+                # subsequent turns: first block is the peer response already
+                # logged above — skip it; remaining blocks are user interjections
+                for source, body in pending.blocks[1:]:
+                    messages.append((source, body, pending.sent_at))
+
+            messages.append((response.agent, response.text, response.received_at))
+
+        for i, (source, body, ts) in enumerate(messages):
+            ts_str = f" · {_format_local_time(ts)}" if ts else ""
+            body = _strip_routing_signals(body)
+            if i > 0:
+                lines.append("---")
+                lines.append("")
+            lines.append(f"**{source}**{ts_str}")
+            lines.append(body)
+            lines.append("")
 
         output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return output_path

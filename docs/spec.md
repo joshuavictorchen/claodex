@@ -582,6 +582,10 @@ newline. `0` means start of file. Cursors MUST only advance, never retreat.
 
 ### Exchange log format
 
+Group-chat transcript. Each message appears exactly once in chronological
+order. Routing signals (`[COLLAB]`, `[CONVERGED]`) are stripped. Messages
+are separated by horizontal rules.
+
 ```markdown
 # Collaboration: <initial message, first 80 chars>
 
@@ -591,19 +595,20 @@ Agents: claude ↔ codex
 Turns: <N>
 Stop reason: <turns_reached | user_halt | converged | error text>
 
-## Round 1
+---
 
-### → <starting_agent>
-<message sent>
+**user** · 8:49 PM
+<message text>
 
-### ← <starting_agent>
-<response received>
+---
 
-### → <other_agent>
-<routed message>
+**claude** · 8:50 PM
+<response text>
 
-### ← <other_agent>
-<response received>
+---
+
+**codex** · 8:51 PM
+<response text>
 ```
 
 ## Error Semantics

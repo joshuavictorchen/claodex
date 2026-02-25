@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -61,6 +61,9 @@ class PendingSend:
     target_agent: str
     before_cursor: int
     sent_text: str
+    # structured (source, body) pairs that compose the payload, built at send
+    # time so the exchange log never has to reparse sent_text
+    blocks: list[tuple[str, str]] = field(default_factory=list)
     sent_at: datetime | None = None
 
 
@@ -71,6 +74,7 @@ class ResponseTurn:
     agent: str
     text: str
     source_cursor: int
+    received_at: datetime | None = None
 
 
 @dataclass
@@ -262,7 +266,9 @@ class Router:
         )
         return events, peer_read_cursor
 
-    def compose_user_message(self, target_agent: str, user_text: str) -> tuple[str, int | None]:
+    def compose_user_message(
+        self, target_agent: str, user_text: str
+    ) -> tuple[str, list[tuple[str, str]], int | None]:
         """Compose outbound message with any undelivered peer delta.
 
         Args:
@@ -270,21 +276,21 @@ class Router:
             user_text: Raw user-entered message.
 
         Returns:
-            Tuple of composed message and optional delivery cursor update.
+            Tuple of (rendered payload, structured (source, body) block list,
+            optional delivery cursor update).
         """
         user_text = user_text.strip()
         if not user_text:
             raise ClaodexError("validation error: message cannot be empty")
 
         delta_events, peer_cursor = self.build_delta_for_target(target_agent)
-        if not delta_events:
-            return render_block("user", user_text), None
+        structured: list[tuple[str, str]] = [
+            (event["from"], event["body"]) for event in delta_events
+        ]
+        structured.append(("user", user_text))
 
-        blocks = []
-        for event in delta_events:
-            blocks.append(render_block(event["from"], event["body"]))
-        blocks.append(render_block("user", user_text))
-        return "\n\n".join(blocks), peer_cursor
+        rendered = [render_block(src, body) for src, body in structured]
+        return "\n\n".join(rendered), structured, peer_cursor
 
     def send_user_message(self, target_agent: str, user_text: str) -> PendingSend:
         """Send one user message in normal mode.
@@ -297,7 +303,9 @@ class Router:
             PendingSend metadata for optional response waiting.
         """
         before_cursor = self.refresh_source(target_agent)
-        payload, new_delivery_cursor = self.compose_user_message(target_agent, user_text)
+        payload, blocks, new_delivery_cursor = self.compose_user_message(
+            target_agent, user_text
+        )
         target = self.participants.for_agent(target_agent)
         self._ensure_target_alive(target)
         sent_at = datetime.now(timezone.utc)
@@ -308,6 +316,7 @@ class Router:
             target_agent=target_agent,
             before_cursor=before_cursor,
             sent_text=payload,
+            blocks=blocks,
             sent_at=sent_at,
         )
 
@@ -336,10 +345,13 @@ class Router:
             raise ClaodexError("validation error: routed response cannot be empty")
 
         before_cursor = self.refresh_source(target_agent)
+        # build structured blocks: peer response + any user interjections
+        blocks: list[tuple[str, str]] = [(source_agent, response_text)]
         payload = render_block(source_agent, response_text)
         for text in user_interjections or ():
             text = text.strip()
             if text:
+                blocks.append(("user", text))
                 payload += "\n\n" + render_block("user", text)
 
         target = self.participants.for_agent(target_agent)
@@ -353,6 +365,7 @@ class Router:
             target_agent=target_agent,
             before_cursor=before_cursor,
             sent_text=payload,
+            blocks=blocks,
             sent_at=sent_at,
         )
 
@@ -420,6 +433,7 @@ class Router:
                         agent=target_agent,
                         text=assistant_text,
                         source_cursor=turn_end.marker_line,
+                        received_at=datetime.now(timezone.utc),
                     )
 
                 # interference detection: if a non-meta user row appeared
@@ -459,6 +473,7 @@ class Router:
                             agent=target_agent,
                             text=assistant_text,
                             source_cursor=current_cursor,
+                            received_at=datetime.now(timezone.utc),
                         )
 
             time.sleep(self.config.poll_seconds)
@@ -533,6 +548,7 @@ class Router:
                     agent=target_agent,
                     text=assistant_text,
                     source_cursor=turn_end.marker_line,
+                    received_at=datetime.now(timezone.utc),
                 )
 
         # stop-event fallback for claude; latch the flag so consuming
@@ -558,6 +574,7 @@ class Router:
                         agent=target_agent,
                         text=assistant_text,
                         source_cursor=current_cursor,
+                        received_at=datetime.now(timezone.utc),
                     )
 
         return None

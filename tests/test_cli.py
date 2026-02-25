@@ -10,7 +10,13 @@ from unittest.mock import patch
 import pytest
 
 import claodex.cli as cli_module
-from claodex.cli import ClaodexApplication, CollabRequest, _drain_queue
+from claodex.cli import (
+    ClaodexApplication,
+    CollabRequest,
+    _drain_queue,
+    _format_local_time,
+    _strip_routing_signals,
+)
 from claodex.errors import ClaodexError
 from claodex.input_editor import InputEvent
 from claodex.router import PendingSend, ResponseTurn
@@ -783,3 +789,310 @@ def test_run_repl_prepends_post_halt_annotation_once(tmp_path):
     )
     assert router.sent_user_messages[1] == ("claude", "second follow-up")
     assert application._post_halt is False
+
+
+# -- exchange log tests --
+
+
+def _make_pending(
+    target: str,
+    blocks: list[tuple[str, str]],
+    sent_at: datetime | None = None,
+) -> PendingSend:
+    """Build a PendingSend with structured blocks for exchange log tests."""
+    from claodex.router import render_block
+
+    payload = "\n\n".join(render_block(src, body) for src, body in blocks)
+    return PendingSend(
+        target_agent=target,
+        before_cursor=0,
+        sent_text=payload,
+        blocks=blocks,
+        sent_at=sent_at or datetime(2026, 2, 24, 1, 0, 0, tzinfo=timezone.utc),
+    )
+
+
+def _make_response(
+    agent: str,
+    text: str,
+    received_at: datetime | None = None,
+) -> ResponseTurn:
+    return ResponseTurn(
+        agent=agent,
+        text=text,
+        source_cursor=1,
+        received_at=received_at or datetime(2026, 2, 24, 1, 1, 0, tzinfo=timezone.utc),
+    )
+
+
+def test_exchange_log_basic_flow(tmp_path):
+    """Two-turn collab produces deduplicated group-chat format."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    app = ClaodexApplication()
+
+    t0 = datetime(2026, 2, 24, 1, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 2, 24, 1, 1, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 2, 24, 1, 2, 0, tzinfo=timezone.utc)
+    t3 = datetime(2026, 2, 24, 1, 3, 0, tzinfo=timezone.utc)
+
+    turn_records = [
+        # turn 0: user sends to claude, claude responds
+        (
+            _make_pending("claude", [("user", "hello")], sent_at=t0),
+            _make_response("claude", "hi back", received_at=t1),
+        ),
+        # turn 1: claude's response routed to codex (first block = peer, skipped)
+        (
+            _make_pending("codex", [("claude", "hi back")], sent_at=t2),
+            _make_response("codex", "noted", received_at=t3),
+        ),
+    ]
+
+    path = app._write_exchange_log(
+        workspace_root=workspace,
+        turn_records=turn_records,
+        initial_message="hello",
+        started_at=datetime(2026, 2, 24, 1, 0, 0),
+        turns=2,
+        stop_reason="converged",
+    )
+
+    content = path.read_text(encoding="utf-8")
+
+    # each message appears exactly once
+    assert content.count("hello") == 2  # once in title, once in body
+    assert content.count("hi back") == 1
+    assert content.count("noted") == 1
+
+    # headers present with bold source names
+    assert "**user**" in content
+    assert "**claude**" in content
+    assert "**codex**" in content
+
+    # no round-based markers
+    assert "## Round" not in content
+    assert "### →" not in content
+    assert "### ←" not in content
+
+    # has horizontal rule separator
+    assert "\n---\n" in content
+
+
+def test_exchange_log_user_interjections(tmp_path):
+    """User interjections mid-collab appear between agent responses."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    app = ClaodexApplication()
+
+    t0 = datetime(2026, 2, 24, 1, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 2, 24, 1, 1, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 2, 24, 1, 2, 0, tzinfo=timezone.utc)
+    t3 = datetime(2026, 2, 24, 1, 3, 0, tzinfo=timezone.utc)
+
+    turn_records = [
+        (
+            _make_pending("claude", [("user", "start")], sent_at=t0),
+            _make_response("claude", "working on it", received_at=t1),
+        ),
+        # routed to codex with a user interjection
+        (
+            _make_pending(
+                "codex",
+                [("claude", "working on it"), ("user", "also check tests")],
+                sent_at=t2,
+            ),
+            _make_response("codex", "done", received_at=t3),
+        ),
+    ]
+
+    path = app._write_exchange_log(
+        workspace_root=workspace,
+        turn_records=turn_records,
+        initial_message="start",
+        started_at=datetime(2026, 2, 24, 1, 0, 0),
+        turns=2,
+        stop_reason="converged",
+    )
+
+    content = path.read_text(encoding="utf-8")
+
+    # user interjection appears once, between claude and codex responses
+    assert content.count("also check tests") == 1
+    # verify ordering: user message → claude → interjection → codex
+    idx_claude = content.index("working on it")
+    idx_interject = content.index("also check tests")
+    idx_codex = content.index("done")
+    assert idx_claude < idx_interject < idx_codex
+
+
+def test_exchange_log_strips_signals(tmp_path):
+    """[COLLAB] and [CONVERGED] are stripped from displayed text."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    app = ClaodexApplication()
+
+    turn_records = [
+        (
+            _make_pending("claude", [("user", "go")]),
+            _make_response("claude", "sounds good\n\n[COLLAB]"),
+        ),
+        (
+            _make_pending("codex", [("claude", "sounds good\n\n[COLLAB]")]),
+            _make_response("codex", "agreed\n\n[CONVERGED]"),
+        ),
+    ]
+
+    path = app._write_exchange_log(
+        workspace_root=workspace,
+        turn_records=turn_records,
+        initial_message="go",
+        started_at=datetime(2026, 2, 24, 1, 0, 0),
+        turns=2,
+        stop_reason="converged",
+    )
+
+    content = path.read_text(encoding="utf-8")
+    assert "[COLLAB]" not in content
+    assert "[CONVERGED]" not in content
+    # actual message text survives
+    assert "sounds good" in content
+    assert "agreed" in content
+
+
+def test_exchange_log_literal_header_in_body_not_split(tmp_path):
+    """Agent text containing literal ``--- user ---`` is NOT split into blocks.
+
+    Because we use structured blocks from PendingSend (built at send time),
+    not regex parsing of sent_text, literal headers in message bodies are
+    treated as plain text.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    app = ClaodexApplication()
+
+    # codex's response contains a literal header pattern
+    agent_text = "Here is literal:\n--- user ---\nnot a real block"
+
+    turn_records = [
+        (
+            _make_pending("claude", [("user", "show me")]),
+            _make_response("claude", agent_text),
+        ),
+    ]
+
+    path = app._write_exchange_log(
+        workspace_root=workspace,
+        turn_records=turn_records,
+        initial_message="show me",
+        started_at=datetime(2026, 2, 24, 1, 0, 0),
+        turns=1,
+        stop_reason="turns_reached",
+    )
+
+    content = path.read_text(encoding="utf-8")
+
+    # the literal header text appears as part of claude's response, not as
+    # a separate user message
+    assert "--- user ---" in content
+    # only two bold headers: one for user, one for claude
+    assert content.count("**user**") == 1
+    assert content.count("**claude**") == 1
+
+
+def test_exchange_log_timestamps_present(tmp_path):
+    """Every message gets a local timestamp from structured data."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    app = ClaodexApplication()
+
+    t0 = datetime(2026, 2, 24, 1, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 2, 24, 1, 5, 0, tzinfo=timezone.utc)
+
+    turn_records = [
+        (
+            _make_pending("claude", [("user", "ping")], sent_at=t0),
+            _make_response("claude", "pong", received_at=t1),
+        ),
+    ]
+
+    path = app._write_exchange_log(
+        workspace_root=workspace,
+        turn_records=turn_records,
+        initial_message="ping",
+        started_at=datetime(2026, 2, 24, 1, 0, 0),
+        turns=1,
+        stop_reason="turns_reached",
+    )
+
+    content = path.read_text(encoding="utf-8")
+    # both messages should have timestamps (no bare **source** without · time)
+    assert "**user** ·" in content
+    assert "**claude** ·" in content
+    # should contain AM/PM formatted time
+    assert "AM" in content or "PM" in content
+
+
+def test_strip_routing_signals():
+    assert _strip_routing_signals("hello\n\n[COLLAB]") == "hello"
+    assert _strip_routing_signals("done\n\n[CONVERGED]") == "done"
+    assert _strip_routing_signals("plain text") == "plain text"
+    # both signals in either order
+    assert _strip_routing_signals("ok\n\n[CONVERGED]\n\n[COLLAB]") == "ok"
+    assert _strip_routing_signals("ok\n[COLLAB]\n[CONVERGED]") == "ok"
+    # stacked duplicates
+    assert _strip_routing_signals("ok\n[CONVERGED]\n[CONVERGED]") == "ok"
+
+
+def test_format_local_time():
+    ts = datetime(2026, 2, 24, 13, 5, 0, tzinfo=timezone.utc)
+    result = _format_local_time(ts)
+    # result depends on local timezone, but should match H:MM AM/PM pattern
+    assert ":" in result
+    assert result.endswith("AM") or result.endswith("PM")
+
+
+def test_exchange_log_seed_turn_has_timestamp(tmp_path):
+    """Agent-initiated collab (seed turn) still gets timestamps on every message."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    app = ClaodexApplication()
+
+    t0 = datetime(2026, 2, 24, 1, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 2, 24, 1, 0, 30, tzinfo=timezone.utc)
+    t2 = datetime(2026, 2, 24, 1, 1, 0, tzinfo=timezone.utc)
+    t3 = datetime(2026, 2, 24, 1, 2, 0, tzinfo=timezone.utc)
+
+    # seed turn: user sent to claude, claude responded with [COLLAB]
+    seed = (
+        _make_pending("claude", [("user", "review this")], sent_at=t0),
+        _make_response("claude", "looks good, let me ask codex", received_at=t1),
+    )
+
+    # subsequent turn: routed to codex
+    follow = (
+        _make_pending(
+            "codex",
+            [("claude", "looks good, let me ask codex")],
+            sent_at=t2,
+        ),
+        _make_response("codex", "agreed", received_at=t3),
+    )
+
+    path = app._write_exchange_log(
+        workspace_root=workspace,
+        turn_records=[seed, follow],
+        initial_message="review this",
+        started_at=datetime(2026, 2, 24, 1, 0, 0),
+        turns=2,
+        stop_reason="converged",
+        initiated_by="claude",
+    )
+
+    content = path.read_text(encoding="utf-8")
+
+    # every bold header must have a timestamp (no bare **source** without · time)
+    import re
+
+    bare_headers = re.findall(r"\*\*\w+\*\*(?!\s+·)", content)
+    assert bare_headers == [], f"headers without timestamps: {bare_headers}"
