@@ -274,11 +274,9 @@ class ClaodexApplication:
             print(self._status_line("agents", "ok"))
 
             self._write_status_line(self._status_line("skill commands", ".."))
-            prefill_warnings = prefill_skill_commands(layout)
+            prefill_skill_commands(layout)
             self._clear_terminal_line()
             print(self._status_line("skill commands", "ok"))
-            for warning in prefill_warnings:
-                print(f"    [!!] {warning}")
 
             print()
             print("  attaching")
@@ -1119,7 +1117,7 @@ class ClaodexApplication:
             if agent in done_set:
                 sys.stdout.write(self._status_line(agent, "ok", color=True) + "\n")
             elif agent in waiting:
-                sys.stdout.write(self._status_line(agent, "waiting", color=True))
+                sys.stdout.write(self._status_line(agent, "waiting", color=True) + "\n")
         sys.stdout.flush()
 
     @staticmethod
