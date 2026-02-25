@@ -263,15 +263,62 @@ def start_sidebar_process(layout: PaneLayout, workspace_root: Path) -> None:
     _run_tmux(["send-keys", "-t", layout.sidebar, command, "C-m"])
 
 
-def prefill_skill_commands(layout: PaneLayout) -> None:
+def verify_prefill(
+    pane_id: str,
+    expected_text: str,
+    timeout_seconds: float = 5.0,
+    poll_seconds: float = 0.3,
+) -> bool:
+    """Return true when typed prefill text appears in the pane tail.
+
+    Polls only the tail of captured pane output to avoid false positives
+    from stale scrollback content.
+
+    Args:
+        pane_id: Target pane id.
+        expected_text: Literal text expected in pane input.
+        timeout_seconds: Maximum time to wait.
+        poll_seconds: Poll interval while waiting.
+    """
+    deadline = time.time() + timeout_seconds
+    while True:
+        result = _run_tmux(
+            ["capture-pane", "-p", "-S", "-8", "-E", "-1", "-t", pane_id],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode == 0 and expected_text in result.stdout:
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(poll_seconds)
+
+
+def prefill_skill_commands(layout: PaneLayout) -> list[str]:
     """Type skill trigger commands into agent panes without submitting.
 
     Prepopulates `/claodex` in Claude and `$claodex` in Codex so the user
     only needs to press Enter in each pane to trigger registration.
+
+    Returns:
+        Warning messages for panes where prefill could not be confirmed.
     """
+    warnings: list[str] = []
+    prefill_targets = [
+        (layout.codex, "$claodex"),
+        (layout.claude, "/claodex"),
+    ]
+
     # `-l` for literal text, `--` to prevent tmux flag interpretation
-    _run_tmux(["send-keys", "-t", layout.codex, "-l", "--", "$claodex"])
-    _run_tmux(["send-keys", "-t", layout.claude, "-l", "--", "/claodex"])
+    for pane_id, command in prefill_targets:
+        _run_tmux(["send-keys", "-t", pane_id, "-l", "--", command])
+        if not verify_prefill(pane_id, command):
+            warnings.append(
+                f"prefill not confirmed for pane {pane_id}; "
+                f"type {command} manually before pressing Enter"
+            )
+
+    return warnings
 
 
 def is_pane_alive(pane_id: str, session_name: str = SESSION_NAME) -> bool:

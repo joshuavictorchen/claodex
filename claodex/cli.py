@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TextIO
 
 from .constants import (
     AGENTS,
@@ -32,7 +33,7 @@ from .state import (
     clear_ui_state_files,
     cursor_snapshot,
     delivery_cursor_file,
-    ensure_gitignore_entry,
+    ensure_claodex_gitignore,
     ensure_state_layout,
     exchanges_dir,
     initialize_cursors_from_line_counts,
@@ -218,7 +219,7 @@ class ClaodexApplication:
             )
 
         ensure_state_layout(workspace_root)
-        ensure_gitignore_entry(workspace_root)
+        ensure_claodex_gitignore(workspace_root)
         self._install_skill_assets()
 
         # clear all stale state from prior sessions: participant files (so
@@ -251,7 +252,9 @@ class ClaodexApplication:
 
             # prepopulate skill triggers so user only needs to press Enter
             print("prefilling skill commands...")
-            prefill_skill_commands(layout)
+            prefill_warnings = prefill_skill_commands(layout)
+            for warning in prefill_warnings:
+                print(f"  warning: {warning}")
 
             # paste REPL into input pane and attach immediately so the user
             # can see the agent panes and press Enter to trigger registration
@@ -885,6 +888,14 @@ class ClaodexApplication:
         )
         self._update_metrics(bus, mode="collab", collab_turn=None, collab_max=request.turns)
         started_at = datetime.now().astimezone().replace(microsecond=0)
+        initiated_by = seed_turn[1].agent if seed_turn else "user"
+        exchange_path, exchange_handle = self._open_exchange_log(
+            workspace_root=workspace_root,
+            initial_message=request.message,
+            started_at=started_at,
+            initiated_by=initiated_by,
+        )
+        exchange_first_message = True
 
         stop_reason = "turns_reached"
         turns_completed = 0
@@ -918,6 +929,21 @@ class ClaodexApplication:
                 seed_pending, seed_response = seed_turn
                 turns_completed = 1
                 turn_records.append(seed_turn)
+                for source, body in seed_pending.blocks:
+                    exchange_first_message = self._append_exchange_message(
+                        exchange_handle,
+                        source,
+                        body,
+                        seed_pending.sent_at,
+                        first_message=exchange_first_message,
+                    )
+                exchange_first_message = self._append_exchange_message(
+                    exchange_handle,
+                    seed_response.agent,
+                    seed_response.text,
+                    seed_response.received_at,
+                    first_message=exchange_first_message,
+                )
                 words = count_words(seed_response.text)
                 self._mark_agent_idle(
                     bus,
@@ -951,6 +977,14 @@ class ClaodexApplication:
                 pending = router.send_user_message(request.start_agent, request.message)
                 last_active_target = pending.target_agent
                 self._mark_agent_thinking(bus, pending.target_agent, sent_at=pending.sent_at)
+                for source, body in pending.blocks:
+                    exchange_first_message = self._append_exchange_message(
+                        exchange_handle,
+                        source,
+                        body,
+                        pending.sent_at,
+                        first_message=exchange_first_message,
+                    )
 
             while turns_completed < request.turns:
                 self._log_event(
@@ -989,6 +1023,13 @@ class ClaodexApplication:
                 )
 
                 turn_records.append((pending, response))
+                exchange_first_message = self._append_exchange_message(
+                    exchange_handle,
+                    response.agent,
+                    response.text,
+                    response.received_at,
+                    first_message=exchange_first_message,
+                )
 
                 # convergence: both agents signaled in consecutive turns
                 if (
@@ -1020,6 +1061,14 @@ class ClaodexApplication:
                 last_active_target = next_target
                 self._mark_agent_thinking(bus, next_target, sent_at=pending.sent_at)
                 if interjections:
+                    for source, body in pending.blocks[1:]:
+                        exchange_first_message = self._append_exchange_message(
+                            exchange_handle,
+                            source,
+                            body,
+                            pending.sent_at,
+                            first_message=exchange_first_message,
+                        )
                     self._log_event(
                         bus,
                         "collab",
@@ -1039,6 +1088,7 @@ class ClaodexApplication:
         finally:
             stop_listener.set()
             listener.join(timeout=0.5)
+            self._close_exchange_log(exchange_handle, turns_completed, stop_reason)
 
         # any queued interjections that were not routed inline are dropped
         # when collab stops
@@ -1050,16 +1100,6 @@ class ClaodexApplication:
                 f"dropped {len(remaining)} queued interjection(s)",
             )
 
-        initiated_by = seed_turn[1].agent if seed_turn else "user"
-        exchange_path = self._write_exchange_log(
-            workspace_root=workspace_root,
-            turn_records=turn_records,
-            initial_message=request.message,
-            started_at=started_at,
-            turns=turns_completed,
-            stop_reason=stop_reason,
-            initiated_by=initiated_by,
-        )
         self._log_event(
             bus,
             "collab",
@@ -1214,81 +1254,79 @@ class ClaodexApplication:
             return
         bus.log(kind, message, agent=agent, target=target, meta=meta)
 
-    def _write_exchange_log(
+    def _open_exchange_log(
         self,
         workspace_root: Path,
-        turn_records: list[tuple[PendingSend, ResponseTurn]],
         initial_message: str,
         started_at: datetime,
-        turns: int,
-        stop_reason: str,
         initiated_by: str = "user",
-    ) -> Path:
-        """Persist collab exchange log as a group-chat transcript.
-
-        Each message appears exactly once in chronological order with a
-        ``**source** · H:MM AM/PM`` header line.
+    ) -> tuple[Path, TextIO]:
+        """Create the exchange log file and write the static header.
 
         Args:
             workspace_root: Workspace root for state output.
-            turn_records: Collected turn send/response tuples.
             initial_message: User collab prompt.
             started_at: Collab start timestamp.
-            turns: Turns completed.
-            stop_reason: Terminal reason string.
             initiated_by: Who started the collab ("user" or agent name).
 
         Returns:
-            Path to written markdown file.
+            Open file path and writable text handle.
         """
-        timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
+        timestamp = started_at.strftime("%y%m%d-%H%M%S")
         output_dir = exchanges_dir(workspace_root)
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{timestamp}.md"
 
         header_message = initial_message.strip().replace("\n", " ")[:80]
-        lines = [
+        handle = output_path.open("w", encoding="utf-8")
+        lines = (
             f"# Collaboration: {header_message}",
             "",
             f"Started: {started_at.isoformat()}",
             f"Initiated by: {initiated_by}",
             "Agents: claude ↔ codex",
-            f"Turns: {turns}",
-            f"Stop reason: {stop_reason}",
             "",
-            "---",
-            "",
-        ]
+        )
+        handle.write("\n".join(lines) + "\n")
+        handle.flush()
+        return output_path, handle
 
-        # build flat chronological message list from structured blocks:
-        # (source, body, timestamp or None)
-        messages: list[tuple[str, str, datetime | None]] = []
+    def _append_exchange_message(
+        self,
+        handle: TextIO,
+        source: str,
+        body: str,
+        timestamp: datetime | None,
+        *,
+        first_message: bool,
+    ) -> bool:
+        """Append one source message to an open exchange log and flush.
 
-        for i, (pending, response) in enumerate(turn_records):
-            if i == 0:
-                # first turn: all blocks are new (delta context + user message)
-                for source, body in pending.blocks:
-                    messages.append((source, body, pending.sent_at))
-            else:
-                # subsequent turns: first block is the peer response already
-                # logged above — skip it; remaining blocks are user interjections
-                for source, body in pending.blocks[1:]:
-                    messages.append((source, body, pending.sent_at))
+        Args:
+            handle: Open markdown file handle.
+            source: Message source label.
+            body: Message body text.
+            timestamp: Timestamp for display.
+            first_message: Whether this is the first log message.
 
-            messages.append((response.agent, response.text, response.received_at))
+        Returns:
+            False after append so callers can keep a simple first-message flag.
+        """
+        if not first_message:
+            handle.write("---\n\n")
+        ts_str = f" · {_format_local_time(timestamp)}" if timestamp else ""
+        cleaned_body = _strip_routing_signals(body)
+        handle.write(f"## {source}{ts_str}\n")
+        handle.write(f"{cleaned_body}\n\n")
+        handle.flush()
+        return False
 
-        for i, (source, body, ts) in enumerate(messages):
-            ts_str = f" · {_format_local_time(ts)}" if ts else ""
-            body = _strip_routing_signals(body)
-            if i > 0:
-                lines.append("---")
-                lines.append("")
-            lines.append(f"**{source}**{ts_str}")
-            lines.append(body)
-            lines.append("")
-
-        output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return output_path
+    def _close_exchange_log(self, handle: TextIO, turns: int, stop_reason: str) -> None:
+        """Write exchange summary footer and close the file handle."""
+        handle.write("---\n\n")
+        handle.write(f"*Turns: {turns} · Stop reason: {stop_reason}*\n")
+        handle.flush()
+        handle.close()
 
     def _emit_status(
         self,

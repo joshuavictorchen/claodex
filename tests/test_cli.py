@@ -294,7 +294,9 @@ def test_runtime_repl_methods_do_not_call_print():
         "_mark_agent_idle",
         "_update_metrics",
         "_log_event",
-        "_write_exchange_log",
+        "_open_exchange_log",
+        "_append_exchange_message",
+        "_close_exchange_log",
         "_emit_status",
     }
 
@@ -647,7 +649,6 @@ def test_run_collab_halt_drops_remaining_interjections(tmp_path):
     router = _RouterStub()
     request = CollabRequest(turns=3, start_agent="claude", message="do the task")
 
-    application._write_exchange_log = lambda **_kwargs: workspace / "exchange.md"
     captured_editor = None
 
     def fake_halt_listener(
@@ -681,8 +682,6 @@ def test_run_collab_logs_recv_event_for_completed_turn(tmp_path):
     router = _RouterStub()
     request = CollabRequest(turns=1, start_agent="claude", message="do the task")
     bus = _BusRecorder()
-
-    application._write_exchange_log = lambda **_kwargs: workspace / "exchange.md"
 
     def fake_halt_listener(*_args, **_kwargs):  # noqa: ANN001
         return
@@ -720,8 +719,6 @@ def test_run_collab_logs_recv_event_for_seed_turn(tmp_path):
         ),
         ResponseTurn(agent="codex", text="seed reply", source_cursor=1),
     )
-
-    application._write_exchange_log = lambda **_kwargs: workspace / "exchange.md"
 
     def fake_halt_listener(*_args, **_kwargs):  # noqa: ANN001
         return
@@ -825,6 +822,46 @@ def _make_response(
     )
 
 
+def _write_streaming_exchange_log(
+    app: ClaodexApplication,
+    workspace: Path,
+    turn_records: list[tuple[PendingSend, ResponseTurn]],
+    *,
+    initial_message: str,
+    started_at: datetime,
+    turns: int,
+    stop_reason: str,
+    initiated_by: str = "user",
+) -> Path:
+    """Write an exchange log using open/append/close streaming helpers."""
+    path, handle = app._open_exchange_log(
+        workspace_root=workspace,
+        initial_message=initial_message,
+        started_at=started_at,
+        initiated_by=initiated_by,
+    )
+    first_message = True
+    for index, (pending, response) in enumerate(turn_records):
+        blocks = pending.blocks if index == 0 else pending.blocks[1:]
+        for source, body in blocks:
+            first_message = app._append_exchange_message(
+                handle,
+                source,
+                body,
+                pending.sent_at,
+                first_message=first_message,
+            )
+        first_message = app._append_exchange_message(
+            handle,
+            response.agent,
+            response.text,
+            response.received_at,
+            first_message=first_message,
+        )
+    app._close_exchange_log(handle, turns=turns, stop_reason=stop_reason)
+    return path
+
+
 def test_exchange_log_basic_flow(tmp_path):
     """Two-turn collab produces deduplicated group-chat format."""
     workspace = tmp_path / "ws"
@@ -849,8 +886,9 @@ def test_exchange_log_basic_flow(tmp_path):
         ),
     ]
 
-    path = app._write_exchange_log(
-        workspace_root=workspace,
+    path = _write_streaming_exchange_log(
+        app=app,
+        workspace=workspace,
         turn_records=turn_records,
         initial_message="hello",
         started_at=datetime(2026, 2, 24, 1, 0, 0),
@@ -865,18 +903,20 @@ def test_exchange_log_basic_flow(tmp_path):
     assert content.count("hi back") == 1
     assert content.count("noted") == 1
 
-    # headers present with bold source names
-    assert "**user**" in content
-    assert "**claude**" in content
-    assert "**codex**" in content
+    # headers present with markdown h2 source headings
+    assert "## user" in content
+    assert "## claude" in content
+    assert "## codex" in content
 
     # no round-based markers
     assert "## Round" not in content
     assert "### →" not in content
     assert "### ←" not in content
 
-    # has horizontal rule separator
+    # first message has no leading separator; separators exist between messages
+    assert not content.startswith("---")
     assert "\n---\n" in content
+    assert "*Turns: 2 · Stop reason: converged*" in content
 
 
 def test_exchange_log_user_interjections(tmp_path):
@@ -906,8 +946,9 @@ def test_exchange_log_user_interjections(tmp_path):
         ),
     ]
 
-    path = app._write_exchange_log(
-        workspace_root=workspace,
+    path = _write_streaming_exchange_log(
+        app=app,
+        workspace=workspace,
         turn_records=turn_records,
         initial_message="start",
         started_at=datetime(2026, 2, 24, 1, 0, 0),
@@ -943,8 +984,9 @@ def test_exchange_log_strips_signals(tmp_path):
         ),
     ]
 
-    path = app._write_exchange_log(
-        workspace_root=workspace,
+    path = _write_streaming_exchange_log(
+        app=app,
+        workspace=workspace,
         turn_records=turn_records,
         initial_message="go",
         started_at=datetime(2026, 2, 24, 1, 0, 0),
@@ -981,8 +1023,9 @@ def test_exchange_log_literal_header_in_body_not_split(tmp_path):
         ),
     ]
 
-    path = app._write_exchange_log(
-        workspace_root=workspace,
+    path = _write_streaming_exchange_log(
+        app=app,
+        workspace=workspace,
         turn_records=turn_records,
         initial_message="show me",
         started_at=datetime(2026, 2, 24, 1, 0, 0),
@@ -995,9 +1038,9 @@ def test_exchange_log_literal_header_in_body_not_split(tmp_path):
     # the literal header text appears as part of claude's response, not as
     # a separate user message
     assert "--- user ---" in content
-    # only two bold headers: one for user, one for claude
-    assert content.count("**user**") == 1
-    assert content.count("**claude**") == 1
+    # only two message headers: one for user, one for claude
+    assert content.count("## user") == 1
+    assert content.count("## claude") == 1
 
 
 def test_exchange_log_timestamps_present(tmp_path):
@@ -1016,8 +1059,9 @@ def test_exchange_log_timestamps_present(tmp_path):
         ),
     ]
 
-    path = app._write_exchange_log(
-        workspace_root=workspace,
+    path = _write_streaming_exchange_log(
+        app=app,
+        workspace=workspace,
         turn_records=turn_records,
         initial_message="ping",
         started_at=datetime(2026, 2, 24, 1, 0, 0),
@@ -1026,9 +1070,9 @@ def test_exchange_log_timestamps_present(tmp_path):
     )
 
     content = path.read_text(encoding="utf-8")
-    # both messages should have timestamps (no bare **source** without · time)
-    assert "**user** ·" in content
-    assert "**claude** ·" in content
+    # both messages should have timestamps (no bare source header without · time)
+    assert "## user ·" in content
+    assert "## claude ·" in content
     # should contain AM/PM formatted time
     assert "AM" in content or "PM" in content
 
@@ -1079,8 +1123,9 @@ def test_exchange_log_seed_turn_has_timestamp(tmp_path):
         _make_response("codex", "agreed", received_at=t3),
     )
 
-    path = app._write_exchange_log(
-        workspace_root=workspace,
+    path = _write_streaming_exchange_log(
+        app=app,
+        workspace=workspace,
         turn_records=[seed, follow],
         initial_message="review this",
         started_at=datetime(2026, 2, 24, 1, 0, 0),
@@ -1091,8 +1136,8 @@ def test_exchange_log_seed_turn_has_timestamp(tmp_path):
 
     content = path.read_text(encoding="utf-8")
 
-    # every bold header must have a timestamp (no bare **source** without · time)
+    # every message header must have a timestamp (no bare "## source" without · time)
     import re
 
-    bare_headers = re.findall(r"\*\*\w+\*\*(?!\s+·)", content)
+    bare_headers = re.findall(r"^##\s+\w+\s*$", content, flags=re.MULTILINE)
     assert bare_headers == [], f"headers without timestamps: {bare_headers}"

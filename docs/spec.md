@@ -554,10 +554,12 @@ injection.
 
 ## State Schema
 
-All state lives under `.claodex/` (auto-added to `.gitignore`):
+All state lives under `.claodex/` (directory contains its own `.gitignore`
+with `*`):
 
 ```
 .claodex/
+├── .gitignore
 ├── participants/
 │   ├── claude.json
 │   └── codex.json
@@ -582,9 +584,10 @@ newline. `0` means start of file. Cursors MUST only advance, never retreat.
 
 ### Exchange log format
 
-Group-chat transcript. Each message appears exactly once in chronological
-order. Routing signals (`[COLLAB]`, `[CONVERGED]`) are stripped. Messages
-are separated by horizontal rules.
+Group-chat transcript written incrementally during collab. Each message
+appears exactly once in chronological order. Routing signals
+(`[COLLAB]`, `[CONVERGED]`) are stripped. Messages are separated by
+horizontal rules.
 
 ```markdown
 # Collaboration: <initial message, first 80 chars>
@@ -592,23 +595,23 @@ are separated by horizontal rules.
 Started: <ISO 8601>
 Initiated by: <user | claude | codex>
 Agents: claude ↔ codex
-Turns: <N>
-Stop reason: <turns_reached | user_halt | converged | error text>
 
----
-
-**user** · 8:49 PM
+## user · 8:49 PM
 <message text>
 
 ---
 
-**claude** · 8:50 PM
+## claude · 8:50 PM
 <response text>
 
 ---
 
-**codex** · 8:51 PM
+## codex · 8:51 PM
 <response text>
+
+---
+
+*Turns: <N> · Stop reason: <turns_reached | user_halt | converged | error text>*
 ```
 
 ## Error Semantics

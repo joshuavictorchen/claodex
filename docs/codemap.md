@@ -1,4 +1,4 @@
-Last updated: 2026-02-24 (rev2)
+Last updated: 2026-02-25 (rev3)
 
 ## Overview
 
@@ -18,7 +18,7 @@ claodex/
 ## Top-Level Files
 
 - `pyproject.toml` — build config, entry point `claodex = claodex.cli:main`
-- `.gitignore` — excludes `.claodex/` state directory
+- `.gitignore` — standard repository-level ignore rules
 
 ## Key Entry Points
 
@@ -30,7 +30,7 @@ claodex/
 
 #### CLI (`claodex/cli.py`)
 
-- **Owns**: startup sequence, REPL loop, collab orchestration, idle watch polling for agent-initiated collab, exchange logging
+- **Owns**: startup sequence, REPL loop, collab orchestration, idle watch polling for agent-initiated collab, incremental exchange logging
 - **Key files**: `cli.py` (all-in-one: startup, attach, REPL, collab, `/status`, `/quit`)
 - **Interface**: `main()` entry point; `parse_collab_request()` also used by tests
 - **Depends on**: router, state, extract, input_editor, tmux_ops, constants, errors
@@ -58,7 +58,7 @@ claodex/
 
 - **Owns**: filesystem state (participants, cursors, delivery tracking)
 - **Key files**: `state.py` (Participant/SessionParticipants dataclasses, cursor I/O, participant validation)
-- **Interface**: `Participant`, `SessionParticipants`, cursor read/write helpers, `peer_agent()`
+- **Interface**: `Participant`, `SessionParticipants`, cursor read/write helpers, `peer_agent()`, `ensure_claodex_gitignore()`
 - **Depends on**: constants, errors
 - **Depended on by**: router, cli
 
@@ -92,11 +92,11 @@ claodex/
 #### tmux Ops (`claodex/tmux_ops.py`)
 
 - **Owns**: all tmux subprocess commands (session/pane lifecycle, content injection)
-- **Key files**: `tmux_ops.py` (session create/kill, layout resolution, sidebar launch, paste_content, _submit_delay)
-- **Interface**: `create_session()`, `start_sidebar_process()`, `paste_content()`, `resolve_layout()`, `is_pane_alive()`, `PaneLayout`
+- **Key files**: `tmux_ops.py` (session create/kill, layout resolution, sidebar launch, prefill verification, paste_content, _submit_delay)
+- **Interface**: `create_session()`, `start_sidebar_process()`, `prefill_skill_commands()`, `verify_prefill()`, `paste_content()`, `resolve_layout()`, `is_pane_alive()`, `PaneLayout`
 - **Depends on**: constants, errors
 - **Depended on by**: cli
-- **Invariants**: paste uses `load-buffer -` (stdin) + `paste-buffer -p -t` (atomic, avoids tmux CLI-argument size limits, and `-p` skips bracketed-paste escapes that Codex's TUI mangles); submit delay scales with payload size (base 0.3s, +0.1s/1000 chars over 2000, capped at 2s)
+- **Invariants**: startup prefill is send-then-verified by polling `capture-pane` tail (`-S -8 -E -1`) with a bounded timeout; paste uses `load-buffer -` (stdin) + `paste-buffer -p -t` (atomic, avoids tmux CLI-argument size limits, and `-p` skips bracketed-paste escapes that Codex's TUI mangles); submit delay scales with payload size (base 0.3s, +0.1s/1000 chars over 2000, capped at 2s)
 
 #### Skill (`claodex/skill/`)
 
@@ -129,6 +129,7 @@ Sidebar process loop
 
 State on disk:
 ```
+.claodex/.gitignore       ← wildcard `*` keeps runtime state untracked
 .claodex/participants/   ← agent registration JSON (session file, pane, cwd)
 .claodex/cursors/        ← read position in each agent's JSONL (1-indexed line number)
 .claodex/delivery/       ← what peer events have been delivered to each agent
@@ -150,6 +151,8 @@ State on disk:
 | Header stripping | `router.py:strip_injected_context` | Removes nested `--- source ---` blocks from forwarded user messages |
 | Registration | `skill/scripts/register.py` | Discovers session file, writes participant JSON |
 | Terminal input | `input_editor.py:InputEditor.read` | Raw-mode editor with history, Tab toggle, Ctrl+J newlines, idle callback, optional prefill |
+| Prefill readiness check | `tmux_ops.py:prefill_skill_commands`, `tmux_ops.py:verify_prefill` | Types skill trigger then confirms it appears in pane tail; returns non-fatal warnings |
+| Exchange logging | `cli.py:_open_exchange_log`, `_append_exchange_message`, `_close_exchange_log` | Log file opens at collab start, appends each message with flush, and writes summary footer at close |
 | Runtime output routing | `cli.py:_run_repl`, `ui.py:UIEventBus` | REPL/collab/status output emits structured events; no runtime stdout prints after REPL starts |
 | Sidebar runtime UI | `sidebar.py:SidebarApplication` | Renders metrics/log panes and executes non-interactive shell commands locally |
 | Adaptive paste delay | `tmux_ops.py:_submit_delay` | Scales with payload size; env override `CLAODEX_PASTE_SUBMIT_DELAY_SECONDS` |
@@ -176,7 +179,7 @@ State on disk:
 
 - Google-style docstrings on all public functions
 - `dataclass(frozen=True)` for value objects
-- Tests in `tests/test_*.py` (164 tests across `test_cli.py`, `test_input_editor.py`, `test_router.py`, `test_sidebar.py`, `test_tmux_ops.py`, `test_ui.py`; no `test_extract.py` or `test_state.py`)
+- Tests in `tests/test_*.py` (includes `test_state.py`, plus `test_cli.py`, `test_input_editor.py`, `test_router.py`, `test_sidebar.py`, `test_tmux_ops.py`, `test_ui.py`; no `test_extract.py`)
 - Router accepts `paste_content` and `pane_alive` as constructor callbacks (testable without tmux)
 - Registration script is standalone (no imports from core `claodex` package) so it can run inside agent skill directories
 
@@ -184,13 +187,14 @@ State on disk:
 
 | Symbol | Location |
 | --- | --- |
-| `ClaodexApplication` | `claodex/cli.py:103` |
-| `Router` | `claodex/router.py:93` |
+| `ClaodexApplication` | `claodex/cli.py:130` |
+| `Router` | `claodex/router.py:97` |
 | `extract_room_events_from_window` | `claodex/extract.py:193` |
-| `paste_content` | `claodex/tmux_ops.py:348` |
-| `_submit_delay` | `claodex/tmux_ops.py:312` |
-| `render_block` | `claodex/router.py:919` |
-| `strip_injected_context` | `claodex/router.py:935` |
+| `verify_prefill` | `claodex/tmux_ops.py:266` |
+| `paste_content` | `claodex/tmux_ops.py:395` |
+| `_submit_delay` | `claodex/tmux_ops.py:359` |
+| `render_block` | `claodex/router.py:936` |
+| `strip_injected_context` | `claodex/router.py:952` |
 | `InputEditor` | `claodex/input_editor.py:71` |
 | `Participant` | `claodex/state.py:28` |
 | `register.py:main` | `claodex/skill/scripts/register.py:350` |

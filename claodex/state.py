@@ -152,26 +152,17 @@ def ensure_state_layout(workspace_root: Path) -> None:
         (workspace_root / relative_dir).mkdir(parents=True, exist_ok=True)
 
 
-def ensure_gitignore_entry(workspace_root: Path) -> None:
-    """Ensure `.claodex/` is ignored by git.
+def ensure_claodex_gitignore(workspace_root: Path) -> None:
+    """Ensure `.claodex/.gitignore` exists with a wildcard ignore entry.
 
     Args:
         workspace_root: Workspace root path.
     """
-    entry = ".claodex/"
-    gitignore = workspace_root / ".gitignore"
-    if not gitignore.exists():
-        gitignore.write_text(f"{entry}\n", encoding="utf-8")
+    gitignore = workspace_root / STATE_DIR / ".gitignore"
+    if gitignore.exists():
         return
-
-    lines = gitignore.read_text(encoding="utf-8", errors="replace").splitlines()
-    if entry in lines:
-        return
-
-    with gitignore.open("a", encoding="utf-8") as handle:
-        if lines and lines[-1] != "":
-            handle.write("\n")
-        handle.write(f"{entry}\n")
+    gitignore.parent.mkdir(parents=True, exist_ok=True)
+    gitignore.write_text("*\n", encoding="utf-8")
 
 
 def read_json(path: Path) -> dict:
