@@ -48,26 +48,27 @@ back-and-forth collaboration.
 
 ```bash
 python3 -m claodex            # from any directory
-python3 -m claodex ~/myproject  # or specify a path
 ```
 
 This creates a tmux session with four panes, launches both agents, installs
 the collaboration skill, and drops you into the claodex REPL. You'll see the
 agent panes with prefilled registration commands — press Enter in each agent
-pane to complete registration. Startup takes ~15-30 seconds.
+pane to complete registration. Startup takes ~10-15 seconds.
 
 You can run multiple instances simultaneously — each workspace gets its own
 tmux session (named `claodex-<dirname>-<hash>`).
 
 ```
-┌──────────────────┬──────────────────┐
-│                  │                  │
-│     Codex        │     Claude       │  (~82%)
-│                  │                  │
-├──────────────────┴──────┬───────────┤
-│   Input                 │  Sidebar  │  (~18%)
-└─────────────────────────┴───────────┘
-    (67%)                    (33%)
+┌───────────────────┬───────────────────┐
+│                   │                   │
+│       Codex       │      Claude       │
+│                   │                   │  (~67%)
+│                   │                   │
+├───────────────────┴──┬────────────────┤
+│        Input         │    Sidebar     │
+│                      │                │  (~33%)
+└──────────────────────┴────────────────┘
+         (57%)               (43%)
 ```
 
 When you're done:

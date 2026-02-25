@@ -33,8 +33,8 @@ STUCK_SKIP_ATTEMPTS = 3
 STUCK_SKIP_SECONDS = 10.0
 
 # tmux layout split percentages
-LAYOUT_BOTTOM_PERCENT = 18
-LAYOUT_SIDEBAR_PERCENT = 33
+LAYOUT_BOTTOM_PERCENT = 33
+LAYOUT_SIDEBAR_PERCENT = 43
 
 # path pattern for claude debug logs (Stop event fallback)
 CLAUDE_DEBUG_LOG_PATTERN = "~/.claude/debug/{session_id}.txt"

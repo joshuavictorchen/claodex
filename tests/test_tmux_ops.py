@@ -216,13 +216,13 @@ def test_create_session_uses_four_pane_split_sequence(monkeypatch):
             "-t",
             "claodex:0.0",
             "-l",
-            "18%",
+            "33%",
             "-c",
             "/workspace",
         ],
         ["list-panes", "-t", "claodex:0", "-F", "#{pane_id}\t#{pane_top}"],
         ["split-window", "-h", "-t", "%1", "-c", "/workspace"],
-        ["split-window", "-h", "-t", "%2", "-l", "33%", "-c", "/workspace"],
+        ["split-window", "-h", "-t", "%2", "-l", "43%", "-c", "/workspace"],
     ]
 
 

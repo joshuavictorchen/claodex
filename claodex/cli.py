@@ -240,7 +240,6 @@ class ClaodexApplication:
 
         ensure_state_layout(workspace_root)
         ensure_claodex_gitignore(workspace_root)
-        print("  claodex")
         print()
         self._install_skill_assets()
         print(self._status_line("skill assets", "ok"))

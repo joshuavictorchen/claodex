@@ -88,26 +88,35 @@ pane.
 claodex [directory]
 ```
 
-`directory` defaults to cwd. It MUST be a git repository or contain a
-`.claodex/` state directory.
+`directory` defaults to cwd. Workspace resolution MUST use git top-level when
+`directory` is inside a git repository; otherwise it MUST use the resolved
+directory path directly. Startup MUST NOT require a git repository or an
+existing `.claodex/` state directory.
 
 ### Sequence
 
-1. Create a tmux session named `claodex` with four panes:
+1. Derive the session name from workspace root and create a tmux session with
+   four panes. Session name format MUST be `claodex-<dirname>-<hash>`, where:
+   - `<dirname>` is workspace basename (or `root` for `/`) with `.` and `:`
+     replaced by `-`
+   - `<hash>` is the first 6 hex characters of SHA-1 of absolute workspace
+     path
 
    ```
-   ┌──────────────────┬──────────────────┐
-   │                  │                  │
-   │     Codex        │     Claude       │  (~82%)
-   │                  │                  │
-   ├───────────┬──────┴──────────────────┤
-   │   Input   │       Sidebar          │  (~18%)
-   └───────────┴─────────────────────────┘
-       (67%)            (33%)
+   ┌───────────────────┬───────────────────┐
+   │                   │                   │
+   │       Codex       │      Claude       │
+   │                   │                   │  (~67%)
+   │                   │                   │
+   ├───────────────────┴──┬────────────────┤
+   │        Input         │    Sidebar     │
+   │                      │                │  (~33%)
+   └──────────────────────┴────────────────┘
+            (57%)               (43%)
    ```
 
 2. Start `codex` in the top-left pane and `claude` in the top-right pane,
-   both with `directory` as cwd.
+   both with resolved workspace root as cwd.
 3. Launch the sidebar process in the bottom-right pane.
 4. Wait for each agent CLI to start (pane command transitions from shell).
 5. Prefill the skill trigger command in each agent pane (`/claodex` for
@@ -122,8 +131,8 @@ claodex [directory]
 
 ### Constraints
 
-- If a `claodex` session already exists, MUST refuse and suggest
-  `claodex attach` or `tmux kill-session -t claodex`.
+- If the workspace-derived session already exists, MUST refuse and suggest
+  `claodex attach` or `tmux kill-session -t <session_name>`.
 - Agent startup timeout: 30 seconds.
 - Registration timeout: 300 seconds (user must press Enter in each pane).
 - On timeout, report which agent failed and exit cleanly.
@@ -134,14 +143,15 @@ claodex [directory]
 claodex attach [directory]
 ```
 
-1. Verify a `claodex` tmux session exists with exactly 4 panes.
+1. Verify the workspace-derived tmux session (`claodex-<dirname>-<hash>`)
+   exists with exactly 4 panes.
 2. Verify both agent panes are alive.
 3. Verify the sidebar pane is alive; relaunch if dead.
 4. Load existing registration and cursor files.
 5. Resume the interactive REPL.
 
 If the session does not have exactly 4 panes, MUST fail with a descriptive
-error (e.g. `"expected 4 panes in session 'claodex', found N"`).
+error (e.g. `"expected 4 panes in session 'claodex-myproject-a1b2c3', found N"`).
 
 ## Agent Skill
 
@@ -181,10 +191,10 @@ All paths MUST be absolute. Timestamp MUST include timezone.
 
 ### Pane layout
 
-- **Input pane** (bottom-left, ~67%): pure text input. After the REPL
+- **Input pane** (bottom-left, ~57%): pure text input. After the REPL
   starts, MUST contain only the prompt and user-typed text. No status, no
   logs, no routing feedback.
-- **Sidebar pane** (bottom-right, ~33%): curses display. See **Sidebar**.
+- **Sidebar pane** (bottom-right, ~43%): curses display. See **Sidebar**.
 
 ### Target selector
 
@@ -524,9 +534,9 @@ On termination:
 ### Layout creation
 
 1. Create session (first pane).
-2. Split vertically: top ~82% / bottom ~18%.
+2. Split vertically: top ~67% / bottom ~33%.
 3. Split top row horizontally: 50/50.
-4. Split bottom row horizontally: ~67% input / ~33% sidebar.
+4. Split bottom row horizontally: ~57% input / ~43% sidebar.
 
 ### Layout resolution
 
@@ -619,7 +629,7 @@ Agents: claude ↔ codex
 | Condition | Behavior |
 |---|---|
 | tmux not installed | Refuse to start; report dependency |
-| `claodex` session exists | Refuse to start; suggest attach or kill |
+| Workspace-derived session exists | Refuse to start; suggest attach or kill |
 | `claude` or `codex` CLI missing | Refuse to start; report which |
 | Agent fails to start | Report; kill session; exit |
 | Agent fails to register | Report; exit |
@@ -644,7 +654,8 @@ Agents: claude ↔ codex
 4. **Agent independence.** Agents survive CLI detach/crash. The CLI observes
    agents; it does not own their lifecycle. `/quit` is explicit teardown.
 
-5. **Session isolation.** One `claodex` tmux session per machine.
+5. **Session isolation.** At most one tmux session per workspace root; multiple
+   workspaces MAY run concurrently.
 
 6. **Input pane silence.** After the REPL starts, the input pane contains
    only the prompt and user text.
