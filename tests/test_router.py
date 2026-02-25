@@ -227,7 +227,7 @@ def _participants(workspace: Path, claude_session: Path, codex_session: Path) ->
 
 def test_parse_collab_request_defaults():
     parsed = parse_collab_request("/collab design api", default_start="claude")
-    assert parsed.turns == 100
+    assert parsed.turns == 500
     assert parsed.start_agent == "claude"
     assert parsed.message == "design api"
 
