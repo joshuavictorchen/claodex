@@ -31,6 +31,7 @@ from .state import (
     Participant,
     SessionParticipants,
     clear_ui_state_files,
+    count_lines,
     cursor_snapshot,
     delivery_cursor_file,
     ensure_claodex_gitignore,
@@ -42,6 +43,8 @@ from .state import (
     participant_file,
     peer_agent,
     read_cursor_file,
+    write_delivery_cursor,
+    write_read_cursor,
 )
 from .tmux_ops import (
     PaneLayout,
@@ -138,6 +141,27 @@ class ClaodexApplication:
         self._collab_interjections: queue.Queue[str] = queue.Queue()
         self._input_prefill: str = ""
         self._post_halt: bool = False
+        self._session_name: str = SESSION_NAME
+
+    @staticmethod
+    def _session_name_for(workspace_root: Path) -> str:
+        """Derive a tmux session name from the workspace path.
+
+        Uses the directory name plus a short hash of the full path,
+        sanitized for tmux (no dots or colons). This allows multiple
+        concurrent instances even for directories with the same basename
+        in different locations.
+        """
+        import hashlib
+
+        dirname = workspace_root.name or "root"
+        # tmux session names cannot contain dots or colons
+        sanitized = dirname.replace(".", "-").replace(":", "-")
+        # short hash of full path to disambiguate same-named dirs
+        path_hash = hashlib.sha1(
+            str(workspace_root).encode(), usedforsecurity=False
+        ).hexdigest()[:6]
+        return f"claodex-{sanitized}-{path_hash}"
 
     def run(self, argv: list[str]) -> int:
         """Run the CLI from argv.
@@ -162,6 +186,7 @@ class ClaodexApplication:
             directory_arg = argv[1] if len(argv) > 1 else "."
 
         workspace_root = self._resolve_workspace(Path(directory_arg))
+        self._session_name = self._session_name_for(workspace_root)
 
         try:
             if mode == "start":
@@ -186,12 +211,7 @@ class ClaodexApplication:
             Workspace root path.
         """
         candidate = directory.expanduser().resolve()
-        workspace_root = resolve_workspace_root(candidate)
-        if not (workspace_root / ".git").exists() and not (workspace_root / ".claodex").exists():
-            raise ClaodexError(
-                "workspace must be a git repository or already contain .claodex state"
-            )
-        return workspace_root
+        return resolve_workspace_root(candidate)
 
     def _run_start(self, workspace_root: Path) -> int:
         """Run startup flow then attach to tmux.
@@ -201,10 +221,9 @@ class ClaodexApplication:
         2. create tmux session with 4 panes
         3. launch agent processes (codex, claude)
         4. wait for agents to be ready (pane command transition)
-        5. prepopulate skill commands in each pane
+        5. prepopulate skill commands in each pane (user presses Enter)
         6. paste REPL command into input pane
         7. attach to tmux — user presses Enter in agent panes to register
-        8. REPL (attach mode) waits for registration, binds layout, inits cursors
 
         Args:
             workspace_root: Workspace root path.
@@ -213,14 +232,18 @@ class ClaodexApplication:
             Exit status code.
         """
         ensure_dependencies()
-        if session_exists(SESSION_NAME):
+        if session_exists(self._session_name):
             raise ClaodexError(
-                "tmux session 'claodex' already exists; run 'claodex attach' or kill the session"
+                f"tmux session '{self._session_name}' already exists; "
+                "run 'claodex attach' or kill the session"
             )
 
         ensure_state_layout(workspace_root)
         ensure_claodex_gitignore(workspace_root)
+        print("  claodex")
+        print()
         self._install_skill_assets()
+        print(self._status_line("skill assets", "ok"))
 
         # clear all stale state from prior sessions: participant files (so
         # registration wait won't accept leftovers) and cursor files (so
@@ -229,36 +252,38 @@ class ClaodexApplication:
 
         created_session = False
         try:
-            print("creating tmux session...")
-            layout = create_session(workspace_root, session_name=SESSION_NAME)
+            layout = create_session(workspace_root, session_name=self._session_name)
             created_session = True
+            print(self._status_line("tmux session", "ok"))
             print(
-                "  panes: "
+                "    "
                 f"codex={layout.codex}  claude={layout.claude}  "
                 f"input={layout.input}  sidebar={layout.sidebar}"
             )
 
-            print("launching sidebar process...")
             start_sidebar_process(layout, workspace_root)
+            print(self._status_line("sidebar", "ok"))
 
             # capture baseline shell commands before launching agents
             baseline = {
                 "codex": pane_current_command(layout.codex),
                 "claude": pane_current_command(layout.claude),
             }
-            print("launching agent processes...")
             start_agent_processes(layout, workspace_root)
             self._wait_for_agents_ready(layout, baseline)
+            print(self._status_line("agents", "ok"))
 
-            # prepopulate skill triggers so user only needs to press Enter
-            print("prefilling skill commands...")
+            self._write_status_line(self._status_line("skill commands", ".."))
             prefill_warnings = prefill_skill_commands(layout)
+            self._clear_terminal_line()
+            print(self._status_line("skill commands", "ok"))
             for warning in prefill_warnings:
-                print(f"  warning: {warning}")
+                print(f"    [!!] {warning}")
 
-            # paste REPL into input pane and attach immediately so the user
-            # can see the agent panes and press Enter to trigger registration
-            attach_cli_pane(layout)
+            print()
+            print("  attaching")
+
+            attach_cli_pane(layout, session_name=self._session_name)
             exe = shlex.quote(sys.executable)
             ws = shlex.quote(str(workspace_root))
             repl_cmd = f"{exe} -m claodex attach {ws}"
@@ -266,12 +291,12 @@ class ClaodexApplication:
 
             # hand the user's terminal to tmux
             if os.environ.get("TMUX"):
-                os.execvp("tmux", ["tmux", "switch-client", "-t", SESSION_NAME])
+                os.execvp("tmux", ["tmux", "switch-client", "-t", self._session_name])
             else:
-                os.execvp("tmux", ["tmux", "attach-session", "-t", SESSION_NAME])
+                os.execvp("tmux", ["tmux", "attach-session", "-t", self._session_name])
         except Exception:
             if created_session:
-                kill_session(SESSION_NAME)
+                kill_session(self._session_name)
             raise
 
     @staticmethod
@@ -286,7 +311,7 @@ class ClaodexApplication:
 
         Handles two cases:
         - Fresh start: registration hasn't happened yet; wait for user to
-          press Enter in agent panes, then init cursors.
+          complete registration, then init cursors.
         - Reattach: participants already registered; validate and resume.
 
         Args:
@@ -296,10 +321,10 @@ class ClaodexApplication:
             Exit status code.
         """
         ensure_dependencies()
-        if not session_exists(SESSION_NAME):
-            raise ClaodexError("tmux session 'claodex' does not exist")
+        if not session_exists(self._session_name):
+            raise ClaodexError(f"tmux session '{self._session_name}' does not exist")
 
-        layout = resolve_layout(SESSION_NAME)
+        layout = resolve_layout(self._session_name)
         participants = self._load_or_wait_participants(workspace_root)
         participants = self._bind_participants_to_layout(participants, layout)
         self._validate_registered_panes(participants)
@@ -311,7 +336,7 @@ class ClaodexApplication:
         else:
             self._ensure_cursor_files_exist(workspace_root)
 
-        attach_cli_pane(layout)
+        attach_cli_pane(layout, session_name=self._session_name)
 
         self._run_repl(workspace_root, participants)
         return 0
@@ -319,9 +344,9 @@ class ClaodexApplication:
     def _load_or_wait_participants(self, workspace_root: Path) -> SessionParticipants:
         """Load participants, waiting for registration if needed.
 
-        On fresh start the REPL launches before the user has pressed Enter
-        in the agent panes. Only falls back to the polling wait when
-        participant files are absent; malformed files raise immediately.
+        On fresh start the REPL may launch before both agent participant
+        files exist. Falls back to polling wait only when files are absent;
+        malformed files still raise immediately.
 
         Args:
             workspace_root: Workspace root path.
@@ -337,7 +362,13 @@ class ClaodexApplication:
             # files exist — load and let parse/validation errors propagate
             return load_participants(workspace_root)
 
-        print("waiting for agent registration (press Enter in each agent pane)...")
+        # the initial prompt is immediately redrawn by _rewrite_status_block,
+        # but print it once so there's no blank flash
+        prompt_text = "press Enter in each agent pane to invoke the skill and register"
+        if sys.stdout.isatty():
+            print(f"\n  {self._ANSI_DIM}{prompt_text}{self._ANSI_RESET}")
+        else:
+            print(f"\n  {prompt_text}")
         participants = self._wait_for_registration(workspace_root)
         self._clear_terminal_screen()
         return participants
@@ -422,6 +453,76 @@ class ClaodexApplication:
         if dead:
             raise ClaodexError(f"registered panes are not alive: {', '.join(dead)}")
 
+    def _check_for_reregistration(
+        self,
+        workspace_root: Path,
+        router: "Router",
+        bus: UIEventBus | None,
+    ) -> None:
+        """Detect agent re-registration and hot-swap session files.
+
+        After `/resume`, an agent writes to a new JSONL file. When the
+        user re-invokes the skill, register.py updates the participant
+        JSON on disk. This method detects the change and swaps the
+        router's in-memory participant to point at the new file,
+        reinitializing cursors so the router doesn't read stale offsets.
+        """
+        for agent in AGENTS:
+            path = participant_file(workspace_root, agent)
+            if not path.exists():
+                continue
+            try:
+                disk = load_participant(workspace_root, agent)
+            except ClaodexError:
+                continue
+
+            current = router.participants.for_agent(agent)
+            if disk.session_file == current.session_file:
+                continue
+
+            # session file changed — build new participant preserving
+            # the pane ID from the current layout binding
+            updated = Participant(
+                agent=agent,
+                session_file=disk.session_file,
+                session_id=disk.session_id,
+                tmux_pane=current.tmux_pane,
+                cwd=disk.cwd,
+                registered_at=disk.registered_at,
+            )
+
+            if agent == "claude":
+                router.participants = SessionParticipants(
+                    claude=updated, codex=router.participants.codex
+                )
+            else:
+                router.participants = SessionParticipants(
+                    claude=router.participants.claude, codex=updated
+                )
+
+            # reinitialize cursors for the changed agent's file:
+            # - read cursor: how far we've read this agent's new file
+            # - delivery cursor to peer: how far in this agent's file
+            #   has been delivered to the peer
+            new_lines = count_lines(updated.session_file)
+            peer = peer_agent(agent)
+            write_read_cursor(workspace_root, agent, new_lines)
+            write_delivery_cursor(workspace_root, peer, new_lines)
+
+            # clear stale router state for this agent
+            router._stuck_state.pop(agent, None)
+
+            # clear pending watches that reference old cursor positions
+            if agent in self._pending_watches:
+                old = self._pending_watches.pop(agent)
+                router.clear_poll_latch(agent, old.before_cursor)
+
+            self._log_event(
+                bus,
+                "system",
+                f"{agent} re-registered — session file swapped",
+            )
+
     def _ensure_sidebar_running(self, layout: PaneLayout, workspace_root: Path) -> None:
         """Ensure sidebar pane is alive and running the sidebar process.
 
@@ -458,15 +559,17 @@ class ClaodexApplication:
             ("claude", layout.claude),
         ]
         waiting = {label for label, _ in agents}
-        print("waiting for agent processes to start...")
+        pending = ", ".join(sorted(waiting))
+        self._write_status_line(self._status_line("agents", pending))
 
         while waiting:
             if time.time() > deadline:
+                self._clear_terminal_line()
                 for label, pane_id in agents:
                     if label in waiting:
                         cmd = pane_current_command(pane_id)
                         print(
-                            f"  {label} pane {pane_id}: "
+                            f"    [!!] {label} pane {pane_id}: "
                             f"current_command={cmd!r} baseline={baseline.get(label)!r}"
                         )
                 pending = ", ".join(sorted(waiting))
@@ -485,11 +588,14 @@ class ClaodexApplication:
                     )
                 cmd = pane_current_command(pane_id)
                 if cmd and cmd != baseline.get(label):
-                    print(f"  {label} ready (process: {cmd})")
                     waiting.discard(label)
+                    if waiting:
+                        pending = ", ".join(sorted(waiting))
+                        self._write_status_line(self._status_line("agents", pending))
 
             if waiting:
                 time.sleep(1.0)
+        self._clear_terminal_line()
 
     def _clear_session_state(self, workspace_root: Path) -> None:
         """Remove stale participant and cursor files from a prior session.
@@ -517,9 +623,12 @@ class ClaodexApplication:
     def _wait_for_registration(self, workspace_root: Path) -> SessionParticipants:
         """Wait for both agents to complete registration.
 
-        The user presses Enter in each agent pane to trigger the prefilled
-        skill command. The skill runs register.py which writes a participant
-        JSON file. We poll for those files.
+        Skill triggers are prefilled in each agent pane; the user presses
+        Enter to invoke them. register.py writes a participant JSON file.
+        This method polls for those files.
+
+        Uses _rewrite_status_block to redraw the full status block on each
+        update, which handles stray newlines from accidental keypresses.
 
         Args:
             workspace_root: Workspace root path.
@@ -527,12 +636,15 @@ class ClaodexApplication:
         Returns:
             Loaded participant metadata.
         """
-        # generous timeout: user may need time to read the panes, press Enter
+        # generous timeout: agent CLIs and skill registration can take time
         deadline = time.time() + 300
         waiting = {"claude", "codex"}
+        done: list[str] = []
+        self._rewrite_status_block(done, waiting)
 
         while waiting:
             if time.time() > deadline:
+                self._clear_terminal_line()
                 pending = ", ".join(sorted(waiting))
                 raise ClaodexError(f"registration timeout waiting for: {pending}")
 
@@ -544,13 +656,27 @@ class ClaodexApplication:
                     load_participant(workspace_root, agent)
                 except ClaodexError:
                     continue
-                print(f"  {agent} registered")
                 waiting.remove(agent)
+                done.append(agent)
+                self._rewrite_status_block(done, waiting)
 
             if waiting:
                 time.sleep(1.0)
 
         return load_participants(workspace_root)
+
+    @staticmethod
+    def _home_shorthand(path: Path) -> str:
+        """Replace $HOME prefix with ~ for display."""
+        home = str(Path.home())
+        s = str(path)
+        # ensure match is at a path boundary, not a string prefix
+        # e.g. /home/master should match but /home/mastering should not
+        if s == home:
+            return "~"
+        if s.startswith(home + "/"):
+            return "~" + s[len(home):]
+        return s
 
     def _install_skill_assets(self) -> None:
         """Install/update claodex skill into claude/codex home skill dirs."""
@@ -568,12 +694,15 @@ class ClaodexApplication:
             os.getenv("CLAODEX_CODEX_SKILLS_DIR", str(Path.home() / ".codex" / "skills"))
         )
 
-        print("installing skill assets...")
-        for root in (claude_root, codex_root):
-            target = root / "claodex"
+        targets = [root / "claodex" for root in (claude_root, codex_root)]
+        print(f"  installing skills from:")
+        print(f"    {self._home_shorthand(source)}")
+        for target in targets:
+            print(f"    -> {self._home_shorthand(target)}")
+
+        for target in targets:
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists():
-                print(f"  removing stale {target}")
                 shutil.rmtree(target)
             # skip __init__.py and __pycache__ — they exist for setuptools
             # package discovery but are not needed in the installed skill
@@ -589,7 +718,6 @@ class ClaodexApplication:
                 raise ClaodexError(
                     f"skill install to {target} incomplete, missing: {', '.join(missing)}"
                 )
-            print(f"  installed {target}")
 
     def _run_repl(self, workspace_root: Path, participants: SessionParticipants) -> None:
         """Run the interactive command loop.
@@ -628,7 +756,7 @@ class ClaodexApplication:
 
                 if event.kind == "quit":
                     self._log_event(bus, "system", "shutting down")
-                    kill_session(SESSION_NAME)
+                    kill_session(self._session_name)
                     self._log_event(bus, "system", "session killed")
                     return
 
@@ -679,13 +807,13 @@ class ClaodexApplication:
                     if text.startswith("/"):
                         if text == "/quit":
                             self._log_event(bus, "system", "shutting down")
-                            kill_session(SESSION_NAME)
+                            kill_session(self._session_name)
                             self._log_event(bus, "system", "session killed")
                             return
                         if text == "/status":
                             self._emit_status(
                                 workspace_root=workspace_root,
-                                participants=participants,
+                                participants=router.participants,
                                 target=target,
                                 bus=bus,
                             )
@@ -751,6 +879,9 @@ class ClaodexApplication:
         from .input_editor import InputEvent
 
         def _poll() -> InputEvent | None:
+            # detect session file changes from agent re-registration
+            self._check_for_reregistration(router.workspace_root, router, bus)
+
             expired = []
             # iterate a snapshot to allow mutation during the loop
             for agent, pending in list(self._pending_watches.items()):
@@ -845,12 +976,150 @@ class ClaodexApplication:
 
         return InputEvent(kind="submit", value=line)
 
+    # ansi color constants for registration status display
+    _ANSI_RESET = "\033[0m"
+    _ANSI_DIM = "\033[90m"
+    _ANSI_GREEN = "\033[32m"
+    _ANSI_CLAUDE = "\033[38;5;216m"  # orange/salmon — matches prompt
+    _ANSI_CODEX = "\033[38;5;116m"  # teal — matches prompt
+    _AGENT_COLORS = {"claude": _ANSI_CLAUDE, "codex": _ANSI_CODEX}
+
+    @staticmethod
+    def _status_line(
+        label: str, status: str, indent: int = 2, color: bool = False
+    ) -> str:
+        """Format a dot-leader status line.
+
+        Produces lines like: '  skill assets .............. ok'
+
+        Width adapts to terminal size, clamped so narrow terminals
+        don't wrap and wide terminals don't stretch absurdly.
+
+        Args:
+            label: Step name (left side).
+            status: Status text (right side).
+            indent: Leading space count.
+            color: Whether to apply ANSI colors (agent name color,
+                   dim dots, green/dim status).
+
+        Returns:
+            Formatted line string (no trailing newline).
+        """
+        columns = shutil.get_terminal_size().columns
+        # usable width: never exceed available columns, cap upper bound at 40
+        available = columns - indent - 1
+        usable = min(available, 40)
+        # space for label + one space + one dot minimum + one space + status
+        dots_budget = usable - len(label) - len(status) - 2
+        if dots_budget < 1:
+            # terminal too narrow for dots — just space-separate
+            if color:
+                return ClaodexApplication._colorize_status_line(
+                    indent, label, " ", status
+                )
+            return f"{' ' * indent}{label} {status}"
+        dots = "." * dots_budget
+        if color:
+            return ClaodexApplication._colorize_status_line(
+                indent, label, f" {dots} ", status
+            )
+        return f"{' ' * indent}{label} {dots} {status}"
+
+    @staticmethod
+    def _colorize_status_line(
+        indent: int, label: str, separator: str, status: str
+    ) -> str:
+        """Apply ANSI colors to a status line.
+
+        Agent names get their prompt color; dots are dim; 'ok' is green;
+        'waiting' and other statuses are dim.
+
+        Args:
+            indent: Leading space count.
+            label: Step name.
+            separator: Dot leader or space between label and status.
+            status: Status text.
+
+        Returns:
+            ANSI-colored line string.
+        """
+        r = ClaodexApplication._ANSI_RESET
+        dim = ClaodexApplication._ANSI_DIM
+        # color agent names with their prompt color
+        agent_color = ClaodexApplication._AGENT_COLORS.get(label)
+        if agent_color:
+            colored_label = f"{agent_color}{label}{r}"
+        else:
+            colored_label = label
+        # color the status word
+        if status == "ok":
+            colored_status = f"{ClaodexApplication._ANSI_GREEN}{status}{r}"
+        else:
+            colored_status = f"{dim}{status}{r}"
+        colored_sep = f"{dim}{separator}{r}"
+        return f"{' ' * indent}{colored_label}{colored_sep}{colored_status}"
+
     @staticmethod
     def _clear_terminal_line() -> None:
         """Clear the active terminal line in TTY mode."""
         if not sys.stdout.isatty():
             return
         sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
+
+    @staticmethod
+    def _write_status_line(message: str) -> None:
+        """Write a transient status line, overwriting the current line in TTY mode."""
+        if not sys.stdout.isatty():
+            print(message)
+            return
+        sys.stdout.write(f"\r\033[K{message}")
+        sys.stdout.flush()
+
+    @staticmethod
+    def _finish_status_line() -> None:
+        """Finalize a transient status line with newline in TTY mode."""
+        if not sys.stdout.isatty():
+            return
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    def _rewrite_status_block(self, done: list[str], waiting: set[str]) -> None:
+        """Clear screen and redraw registration progress.
+
+        Redraws from scratch on each update so stray newlines from
+        accidental keypresses don't leave orphaned status lines.
+        The screen is wiped after registration completes anyway.
+
+        Iterates agents in deterministic order (claude, codex)
+        regardless of registration arrival order.
+        """
+        # registration runs in the input pane (TTY), so color=True
+        is_tty = sys.stdout.isatty()
+        if not is_tty:
+            # non-TTY: just print incrementally, no colors
+            if done:
+                print(self._status_line(done[-1], "ok"))
+            if waiting:
+                for agent in AGENTS:
+                    if agent in waiting:
+                        print(self._status_line(agent, "waiting"))
+            return
+        # clear screen and redraw all lines including the prompt,
+        # so accidental Enter presses don't orphan any lines
+        dim = self._ANSI_DIM
+        reset = self._ANSI_RESET
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.write(
+            f"\n  {dim}press Enter in each agent pane to invoke the skill and register{reset}\n"
+        )
+        sys.stdout.write("\n")
+        done_set = set(done)
+        for agent in AGENTS:
+            if agent in done_set:
+                sys.stdout.write(self._status_line(agent, "ok", color=True) + "\n")
+            elif agent in waiting:
+                sys.stdout.write(self._status_line(agent, "waiting", color=True))
         sys.stdout.flush()
 
     @staticmethod
@@ -1335,32 +1604,31 @@ class ClaodexApplication:
         target: str,
         bus: UIEventBus | None,
     ) -> None:
-        """Emit concise runtime status to the event bus."""
+        """Emit readable runtime status to the sidebar event log."""
         snapshot = cursor_snapshot(workspace_root)
-        payload = {
-            "target": target,
-            "participants": {
-                "claude": {
-                    "pane": participants.claude.tmux_pane,
-                    "session_id": participants.claude.session_id,
-                    "session_file": str(participants.claude.session_file),
-                },
-                "codex": {
-                    "pane": participants.codex.tmux_pane,
-                    "session_id": participants.codex.session_id,
-                    "session_file": str(participants.codex.session_file),
-                },
-            },
-            "cursors": snapshot,
-            "pending_watches": sorted(self._pending_watches.keys()),
-            "collab_seed_agent": self._collab_seed[1].agent if self._collab_seed else None,
-        }
+        watches = sorted(self._pending_watches.keys())
+        seed_agent = self._collab_seed[1].agent if self._collab_seed else None
+
+        # build human-readable status lines
+        lines = [
+            f"target: {target}",
+            f"claude: pane={participants.claude.tmux_pane}"
+            f"  session={participants.claude.session_id}",
+            f"codex:  pane={participants.codex.tmux_pane}"
+            f"  session={participants.codex.session_id}",
+        ]
+        for name, value in sorted(snapshot.items()):
+            lines.append(f"  {name}: {value}")
+        if watches:
+            lines.append(f"watches: {', '.join(watches)}")
+        if seed_agent:
+            lines.append(f"collab seed: {seed_agent}")
+
         self._log_event(
             bus,
             "status",
-            "status snapshot",
+            "\n".join(lines),
             target=target,
-            meta=payload,
         )
 
     @staticmethod

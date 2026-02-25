@@ -444,26 +444,41 @@ class SidebarApplication:
             pass
 
     def _wrapped_log_lines(self, width: int) -> list[tuple[str, int]]:
-        """Build wrapped render lines from log entries."""
+        """Build wrapped render lines from log entries.
+
+        Splits messages on embedded newlines first, then wraps each
+        logical line independently. The first line gets the timestamp
+        prefix; all continuation lines get an indent of equal width.
+        """
         wrapped: list[tuple[str, int]] = []
         for entry in self._entries:
             timestamp = entry.timestamp.astimezone().strftime("%H:%M:%S")
             kind_padding = " " * max(0, 6 - len(entry.kind))
             kind_block = f"{kind_padding}[{entry.kind}]"
             prefix = f"{timestamp} {kind_block} "
-            chunks = textwrap.wrap(
-                entry.message,
-                width=max(1, width - len(prefix)),
-                replace_whitespace=False,
-                drop_whitespace=False,
-            )
-            if not chunks:
-                chunks = [""]
-            attr = self._entry_attr(entry)
-            wrapped.append((f"{prefix}{chunks[0]}", attr))
             continuation_prefix = " " * len(prefix)
-            for chunk in chunks[1:]:
-                wrapped.append((f"{continuation_prefix}{chunk}", attr))
+            wrap_width = max(1, width - len(prefix))
+            attr = self._entry_attr(entry)
+
+            # split on embedded newlines so each logical line wraps
+            # independently (e.g. multi-line /status output)
+            logical_lines = entry.message.split("\n")
+            first = True
+            for logical_line in logical_lines:
+                chunks = textwrap.wrap(
+                    logical_line,
+                    width=wrap_width,
+                    replace_whitespace=False,
+                    drop_whitespace=False,
+                )
+                if not chunks:
+                    chunks = [""]
+                for chunk in chunks:
+                    if first:
+                        wrapped.append((f"{prefix}{chunk}", attr))
+                        first = False
+                    else:
+                        wrapped.append((f"{continuation_prefix}{chunk}", attr))
         return wrapped
 
     def _entry_attr(self, entry: LogEntry) -> int:

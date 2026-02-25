@@ -24,10 +24,13 @@ from claodex.state import (
     Participant,
     SessionParticipants,
     delivery_cursor_file,
+    ensure_state_layout,
     participant_file,
+    read_cursor,
     read_cursor_file,
     ui_events_file,
     ui_metrics_file,
+    write_cursor,
 )
 from claodex.tmux_ops import PaneLayout
 
@@ -213,6 +216,129 @@ def test_bind_participants_to_layout_overrides_registered_panes(tmp_path):
     assert bound.codex.session_id == "codex-session"
 
 
+def test_check_for_reregistration_swaps_session_file(tmp_path):
+    """Re-registration after /resume swaps the session file and resets cursors."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    old_session = tmp_path / "old_session.jsonl"
+    old_session.write_text("line1\nline2\nline3\n", encoding="utf-8")
+    new_session = tmp_path / "new_session.jsonl"
+    new_session.write_text("a\nb\n", encoding="utf-8")
+
+    participants = _build_participants(workspace, old_session)
+
+    # initialize cursors to old file positions
+    read_cursor_path = read_cursor_file(workspace, "claude")
+    delivery_cursor_path = delivery_cursor_file(workspace, "codex")
+    write_cursor(read_cursor_path, 3)
+    write_cursor(delivery_cursor_path, 3)
+
+    # write updated participant JSON pointing at the new session file
+    import json
+
+    part_path = participant_file(workspace, "claude")
+    part_path.parent.mkdir(parents=True, exist_ok=True)
+    part_path.write_text(
+        json.dumps(
+            {
+                "agent": "claude",
+                "session_file": str(new_session),
+                "session_id": "new-id",
+                "tmux_pane": "%5",
+                "cwd": str(workspace),
+                "registered_at": "2026-02-24T12:00:00-05:00",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    # build a minimal router
+    from claodex.router import Router, RoutingConfig
+
+    config = RoutingConfig(poll_seconds=1.0, turn_timeout_seconds=60)
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda *_: None,
+        pane_alive=lambda *_: True,
+        config=config,
+    )
+
+    bus = _BusRecorder()
+    app = ClaodexApplication()
+    app._check_for_reregistration(workspace, router, bus)
+
+    # session file should be swapped
+    assert router.participants.claude.session_file == new_session
+    assert router.participants.claude.session_id == "new-id"
+    # pane ID preserved from original layout binding, not disk
+    assert router.participants.claude.tmux_pane == "%1"
+    # codex participant unchanged
+    assert router.participants.codex.session_file == old_session
+
+    # cursors reinitialized to new file line count (2 lines)
+    assert read_cursor(read_cursor_path) == 2
+    assert read_cursor(delivery_cursor_path) == 2
+
+    # system event logged
+    system_events = [e for e in bus.events if e["kind"] == "system"]
+    assert any("re-registered" in e["message"] for e in system_events)
+
+
+def test_check_for_reregistration_noop_when_unchanged(tmp_path):
+    """No-op when session file has not changed."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    session_file = tmp_path / "session.jsonl"
+    session_file.write_text("line1\n", encoding="utf-8")
+
+    participants = _build_participants(workspace, session_file)
+
+    # write participant JSON with same session file
+    import json
+
+    part_path = participant_file(workspace, "claude")
+    part_path.parent.mkdir(parents=True, exist_ok=True)
+    part_path.write_text(
+        json.dumps(
+            {
+                "agent": "claude",
+                "session_file": str(session_file),
+                "session_id": "claude-session",
+                "tmux_pane": "%1",
+                "cwd": str(workspace),
+                "registered_at": "2026-02-23T00:00:00-05:00",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    from claodex.router import Router, RoutingConfig
+
+    config = RoutingConfig(poll_seconds=1.0, turn_timeout_seconds=60)
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda *_: None,
+        pane_alive=lambda *_: True,
+        config=config,
+    )
+
+    bus = _BusRecorder()
+    app = ClaodexApplication()
+    app._check_for_reregistration(workspace, router, bus)
+
+    # nothing changed
+    assert router.participants.claude.session_file == session_file
+    assert len(bus.events) == 0
+
+
 def test_run_dispatches_sidebar_mode(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -337,9 +463,14 @@ def test_run_repl_status_command_emits_status_event(tmp_path):
         _ = on_idle
         return next(events)
 
+    fake_router = type("FakeRouter", (), {
+        "participants": participants,
+        "workspace_root": workspace,
+    })()
+
     with (
         patch("claodex.cli.UIEventBus", side_effect=fake_bus),
-        patch("claodex.cli.Router", return_value=object()),
+        patch("claodex.cli.Router", return_value=fake_router),
         patch("claodex.cli.kill_session"),
         patch.object(application, "_read_event", side_effect=fake_read_event),
     ):
@@ -348,9 +479,10 @@ def test_run_repl_status_command_emits_status_event(tmp_path):
     assert len(seen_buses) == 1
     status_events = [event for event in seen_buses[0].events if event["kind"] == "status"]
     assert len(status_events) == 1
-    assert status_events[0]["message"] == "status snapshot"
+    assert "target: claude" in status_events[0]["message"]
     assert status_events[0]["target"] == "claude"
-    assert isinstance(status_events[0]["meta"], dict)
+    # status now inlines data in the message instead of meta
+    assert "pane=" in status_events[0]["message"]
     assert seen_buses[0].closed is True
 
 
@@ -1141,3 +1273,101 @@ def test_exchange_log_seed_turn_has_timestamp(tmp_path):
 
     bare_headers = re.findall(r"^##\s+\w+\s*$", content, flags=re.MULTILINE)
     assert bare_headers == [], f"headers without timestamps: {bare_headers}"
+
+
+# -- session name derivation tests --
+
+
+def test_session_name_for_basic():
+    """Session name includes sanitized directory name and path hash."""
+    name = ClaodexApplication._session_name_for(Path("/home/user/my-project"))
+    assert name.startswith("claodex-my-project-")
+    # hash suffix is 6 hex chars
+    suffix = name.split("-", 2)[-1].split("-")[-1]
+    assert len(suffix) == 6
+
+
+def test_session_name_for_different_paths_same_basename():
+    """Same directory name in different locations produces different session names."""
+    name_a = ClaodexApplication._session_name_for(Path("/tmp/a/project"))
+    name_b = ClaodexApplication._session_name_for(Path("/var/tmp/project"))
+    assert name_a != name_b
+
+
+def test_session_name_for_dots_sanitized():
+    """Dots in directory names are replaced with dashes."""
+    name = ClaodexApplication._session_name_for(Path("/home/user/my.project"))
+    # should not contain dots (tmux interprets them as target separators)
+    prefix = name.rsplit("-", 1)[0]
+    assert "." not in prefix
+
+
+def test_session_name_for_root():
+    """Root path (empty name) gets 'root' as dirname."""
+    name = ClaodexApplication._session_name_for(Path("/"))
+    assert name.startswith("claodex-root-")
+
+
+# -- _home_shorthand tests --
+
+
+def test_home_shorthand_under_home():
+    """Paths under $HOME are shortened with ~."""
+    home = Path.home()
+    path = home / "codes" / "project"
+    result = ClaodexApplication._home_shorthand(path)
+    assert result == "~/codes/project"
+
+
+def test_home_shorthand_not_under_home():
+    """Paths not under $HOME are returned as-is."""
+    result = ClaodexApplication._home_shorthand(Path("/tmp/project"))
+    assert result == "/tmp/project"
+
+
+def test_home_shorthand_prefix_boundary():
+    """Paths sharing a string prefix with $HOME but not a path boundary are not shortened."""
+    home = Path.home()
+    # e.g. /home/master -> /home/mastering should NOT become ~ing
+    fake = Path(str(home) + "ing/test")
+    result = ClaodexApplication._home_shorthand(fake)
+    assert result == str(fake)
+    assert "~" not in result
+
+
+def test_home_shorthand_exact_home():
+    """$HOME itself becomes ~."""
+    result = ClaodexApplication._home_shorthand(Path.home())
+    assert result == "~"
+
+
+# -- workspace resolution tests --
+
+
+def test_resolve_workspace_non_git(tmp_path):
+    """Non-git directory is accepted without error."""
+    workspace = tmp_path / "plain-dir"
+    workspace.mkdir()
+    app = ClaodexApplication()
+    result = app._resolve_workspace(workspace)
+    assert result == workspace
+
+
+# -- _status_line width tests --
+
+
+def test_status_line_narrow_terminal():
+    """Status line never exceeds terminal width for narrow terminals."""
+    with patch("shutil.get_terminal_size") as mock_size:
+        mock_size.return_value = type("Size", (), {"columns": 25})()
+        line = ClaodexApplication._status_line("agents", "ok")
+        # visible length should not exceed 25
+        assert len(line) <= 25
+
+
+def test_status_line_very_narrow_terminal():
+    """Extremely narrow terminal gets space-separated fallback."""
+    with patch("shutil.get_terminal_size") as mock_size:
+        mock_size.return_value = type("Size", (), {"columns": 12})()
+        line = ClaodexApplication._status_line("agents", "ok")
+        assert len(line) <= 12

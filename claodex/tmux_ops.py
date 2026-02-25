@@ -305,29 +305,33 @@ def prefill_skill_commands(layout: PaneLayout) -> list[str]:
     """
     warnings: list[str] = []
     prefill_targets = [
-        (layout.codex, "$claodex"),
-        (layout.claude, "/claodex"),
+        ("codex", layout.codex, "$claodex"),
+        ("claude", layout.claude, "/claodex"),
     ]
 
     # `-l` for literal text, `--` to prevent tmux flag interpretation
-    for pane_id, command in prefill_targets:
+    for agent, pane_id, command in prefill_targets:
         _run_tmux(["send-keys", "-t", pane_id, "-l", "--", command])
         if not verify_prefill(pane_id, command):
             warnings.append(
-                f"prefill not confirmed for pane {pane_id}; "
-                f"type {command} manually before pressing Enter"
+                f"prefill not confirmed for {agent}; "
+                f"type {command} manually"
             )
 
     return warnings
 
 
-def is_pane_alive(pane_id: str, session_name: str = SESSION_NAME) -> bool:
-    """Return true when a pane exists and is not marked dead."""
-    result = _run_tmux(
-        ["list-panes", "-t", session_name, "-F", "#{pane_id} #{pane_dead}"],
-        capture_output=True,
-        check=False,
-    )
+def is_pane_alive(pane_id: str, session_name: str | None = None) -> bool:
+    """Return true when a pane exists and is not marked dead.
+
+    Uses global pane lookup (-a) by default so the caller doesn't need
+    to know which session owns the pane. Pass session_name to scope the
+    search if needed.
+    """
+    cmd = ["list-panes", "-a", "-F", "#{pane_id} #{pane_dead}"]
+    if session_name:
+        cmd = ["list-panes", "-t", session_name, "-F", "#{pane_id} #{pane_dead}"]
+    result = _run_tmux(cmd, capture_output=True, check=False)
     if result.returncode != 0:
         return False
     for row in result.stdout.splitlines():
@@ -340,13 +344,16 @@ def is_pane_alive(pane_id: str, session_name: str = SESSION_NAME) -> bool:
     return False
 
 
-def pane_current_command(pane_id: str, session_name: str = SESSION_NAME) -> str | None:
-    """Return the foreground command running in a pane, or None if not found."""
-    result = _run_tmux(
-        ["list-panes", "-t", session_name, "-F", "#{pane_id} #{pane_current_command}"],
-        capture_output=True,
-        check=False,
-    )
+def pane_current_command(pane_id: str, session_name: str | None = None) -> str | None:
+    """Return the foreground command running in a pane, or None if not found.
+
+    Uses global pane lookup (-a) by default so the caller doesn't need
+    to know which session owns the pane.
+    """
+    cmd = ["list-panes", "-a", "-F", "#{pane_id} #{pane_current_command}"]
+    if session_name:
+        cmd = ["list-panes", "-t", session_name, "-F", "#{pane_id} #{pane_current_command}"]
+    result = _run_tmux(cmd, capture_output=True, check=False)
     if result.returncode != 0:
         return None
     for row in result.stdout.splitlines():

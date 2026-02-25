@@ -47,14 +47,17 @@ back-and-forth collaboration.
 ## Quick start
 
 ```bash
-# from any git repository
-python3 -m claodex
+python3 -m claodex            # from any directory
+python3 -m claodex ~/myproject  # or specify a path
 ```
 
 This creates a tmux session with four panes, launches both agents, installs
 the collaboration skill, and drops you into the claodex REPL. You'll see the
 agent panes with prefilled registration commands — press Enter in each agent
 pane to complete registration. Startup takes ~15-30 seconds.
+
+You can run multiple instances simultaneously — each workspace gets its own
+tmux session (named `claodex-<dirname>-<hash>`).
 
 ```
 ┌──────────────────┬──────────────────┐
@@ -78,7 +81,8 @@ When you're done:
 If the CLI exits but the tmux session survives (e.g. terminal disconnect):
 
 ```bash
-python3 -m claodex attach
+python3 -m claodex attach           # from the same directory
+python3 -m claodex attach ~/myproject  # or specify the path
 ```
 
 This reattaches to the running session with cursors intact. If the sidebar
@@ -86,6 +90,16 @@ process died, it's relaunched automatically.
 
 Graceful exits (`/quit`, `Ctrl+D`) kill agents and the tmux session entirely.
 To start fresh, just run `python3 -m claodex` again.
+
+**Agent re-registration.** If an agent session expires or you `/resume` inside
+an agent pane, the agent writes a new session file. claodex detects this
+automatically and hot-swaps to the new file — no restart needed. This happens
+during normal REPL polling, so just send a message or wait a moment after
+the agent comes back.
+
+**Finding your sessions.** Each workspace gets a unique tmux session. Use
+`tmux ls` to see all running sessions, or `tmux kill-session -t <name>` to
+clean one up manually.
 
 ## REPL controls
 
@@ -188,8 +202,8 @@ by side.
 
 ### Key concepts
 
-- **Session**: a named container for panes. claodex creates one called
-  `claodex`.
+- **Session**: a named container for panes. claodex creates one per workspace
+  (e.g. `claodex-myproject-a1b2c3`).
 - **Pane**: one terminal inside the session. You'll see four: Codex
   (top-left), Claude (top-right), your input (bottom-left), and the sidebar
   (bottom-right).
@@ -203,8 +217,8 @@ by side.
 | Switch to another pane | `Ctrl+b` then arrow key |
 | Scroll up in a pane | `Ctrl+b` then `[`, then arrows or PgUp/PgDn. `q` exits scroll |
 | Detach (leave session running) | `Ctrl+b` then `d` |
-| Reattach from outside | `tmux attach -t claodex` (or `python3 -m claodex attach`) |
-| Kill the whole session | `tmux kill-session -t claodex` |
+| Reattach from outside | `python3 -m claodex attach` (or `tmux attach -t <session>`) |
+| Kill the whole session | `tmux kill-session -t <session>` (find name with `tmux ls`) |
 | List running sessions | `tmux ls` |
 
 ### Tips
@@ -213,7 +227,8 @@ by side.
   where you type. Agent panes show their native output — glance at them or
   scroll up, but claodex handles all routing.
 - **If your terminal disconnects** (SSH drop, window close), the tmux session
-  keeps running. Reattach with `tmux attach -t claodex`.
+  keeps running. Reattach with `python3 -m claodex attach` from the same
+  directory.
 - **If an agent pane crashes**, claodex detects it and reports a dead-pane
   error on the next interaction.
 

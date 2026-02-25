@@ -216,6 +216,37 @@ def test_wrapped_log_lines_aligns_kind_and_continuation(tmp_path):
     assert wrapped[1][0].startswith(" " * len(prefix))
 
 
+def test_wrapped_log_lines_splits_multiline_messages(tmp_path):
+    """Messages with embedded newlines produce separate rendered lines."""
+    workspace = tmp_path / "workspace"
+    app = SidebarApplication(workspace)
+    entry = LogEntry(
+        timestamp=datetime(2026, 2, 24, 1, 30, 0, tzinfo=timezone.utc),
+        kind="status",
+        message="target: claude\nclaude: pane=%42\ncodex: pane=%43",
+    )
+    app._entries.append(entry)
+
+    # use a wide width so no wrapping within lines
+    wrapped = app._wrapped_log_lines(width=80)
+
+    # should produce 3 lines: one with prefix, two continuations
+    assert len(wrapped) == 3
+    assert "target: claude" in wrapped[0][0]
+    assert "claude: pane=%42" in wrapped[1][0]
+    assert "codex: pane=%43" in wrapped[2][0]
+
+    # first line has timestamp prefix, continuations are indented
+    prefix = f"{entry.timestamp.astimezone().strftime('%H:%M:%S')}"
+    assert wrapped[0][0].startswith(prefix)
+    assert wrapped[1][0].startswith(" ")
+    assert wrapped[2][0].startswith(" ")
+
+    # no embedded newlines in any rendered line
+    for line, _ in wrapped:
+        assert "\n" not in line
+
+
 def test_handle_input_key_page_scroll_adjusts_offset(tmp_path):
     workspace = tmp_path / "workspace"
     app = SidebarApplication(workspace)

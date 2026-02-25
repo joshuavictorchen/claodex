@@ -67,7 +67,7 @@ def test_paste_content_raises_when_load_buffer_fails(monkeypatch):
 
 
 def test_prefill_skill_commands_types_without_submitting(monkeypatch):
-    """prefill_skill_commands types text into panes but does NOT send C-m."""
+    """prefill_skill_commands types commands but does not submit them."""
     calls: list[list[str]] = []
 
     def fake_run_tmux(args: list[str], **kwargs):
@@ -82,7 +82,7 @@ def test_prefill_skill_commands_types_without_submitting(monkeypatch):
         PaneLayout(codex="%1", claude="%2", input="%3", sidebar="%4")
     )
 
-    # should type literal text into each pane — no C-m submit
+    # should only type literal text — no Escape, no C-m
     assert calls == [
         ["send-keys", "-t", "%1", "-l", "--", "$claodex"],
         ["send-keys", "-t", "%2", "-l", "--", "/claodex"],
@@ -142,9 +142,7 @@ def test_prefill_skill_commands_returns_warning_when_unconfirmed(monkeypatch):
         ["send-keys", "-t", "%1", "-l", "--", "$claodex"],
         ["send-keys", "-t", "%2", "-l", "--", "/claodex"],
     ]
-    assert warnings == [
-        "prefill not confirmed for pane %2; type /claodex manually before pressing Enter"
-    ]
+    assert warnings == ["prefill not confirmed for claude; type /claodex manually"]
 
 
 def test_start_sidebar_process_sends_sidebar_launch_command(monkeypatch):
