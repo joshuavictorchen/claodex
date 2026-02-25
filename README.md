@@ -37,6 +37,14 @@ claodex is the CLI that implements this. You talk to both agents from one
 place; it handles message delivery, context sharing, and automated
 back-and-forth collaboration.
 
+Each agent receives a **skill file** (`SKILL.md`) that claodex installs into
+its skill directory at startup. The skill file is written as instructions *to
+the agent* — it tells the agent how messages are routed, how to interpret
+source headers (`--- user ---`, `--- claude ---`, `--- codex ---`), how to
+behave during automated collab, and how to run one-time registration. Agents
+don't need any special tooling or plugins; the skill file and a registration
+script are the entire integration surface.
+
 ## Prerequisites
 
 - Python 3.12+
