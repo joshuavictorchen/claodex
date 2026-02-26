@@ -1,4 +1,4 @@
-Last updated: 2026-02-25 (rev3)
+Last updated: 2026-02-25 (rev4)
 
 ## Overview
 
@@ -43,7 +43,7 @@ claodex/
 - **Interface**: `Router.send_user_message()`, `Router.send_routed_message()`, `Router.wait_for_response()`, `Router.poll_for_response()`, `Router.clear_poll_latch()`, `render_block()`, `strip_injected_context()`
 - **Depends on**: extract, state, constants, errors; Claude debug log (`~/.claude/debug/{session_id}.txt`) as side-channel for Stop-event fallback
 - **Depended on by**: cli
-- **Invariants**: delivery cursor never exceeds peer read cursor; read cursor never moves backward; user messages are stripped of injected context before delta composition; `wait_for_response` Claude turn detection uses `turn_duration → Stop-event → timeout` priority chain; `poll_for_response` relies on deterministic turn markers only (no Stop-event completion); unexpected non-meta user input during collab wait triggers interference error
+- **Invariants**: delivery cursor never exceeds peer read cursor; read cursor never moves backward; user messages are stripped of injected context before delta composition; `wait_for_response` Claude turn detection uses `turn_duration → Stop-event → timeout` priority chain; `poll_for_response` uses `turn_duration` marker first then Stop-event latch (`_poll_stop_seen`, keyed `(agent, before_cursor)`) that persists the debug-log signal across idle polls until assistant text arrives; `clear_poll_latch` discards a latched entry when a watch is superseded
 
 #### Extraction (`claodex/extract.py`)
 
@@ -164,7 +164,8 @@ State on disk:
 - **Turn boundary**: each user message flushes the pending assistant event, so only the last assistant frame per turn is extracted
 - **Stuck cursor recovery**: after 3 failed parse attempts or 10s on the same line, the cursor skips forward 1 line
 - **Pane liveness**: dead panes cause immediate `ClaodexError` on send or wait
-- **Pending watch model**: one watch per target agent; newer sends supersede older watches and clear their poll latches
+- **Pending watch model**: one watch per target agent; newer sends supersede older watches and clear their poll latches via `Router.clear_poll_latch()`
+- **Spurious collab prevention**: SKILL.md instructs agents not to self-initiate `[COLLAB]` unless the user requests it or the task genuinely requires peer input
 - **Output routing model**: after REPL starts, runtime status/errors/progress are emitted to `UIEventBus` instead of stdout
 - **Skill asset deployment**: `_install_skill_assets()` copies `claodex/skill/` to `~/.claude/skills/claodex/` and `~/.codex/skills/claodex/` on every startup
 
@@ -187,7 +188,7 @@ State on disk:
 
 | Symbol | Location |
 | --- | --- |
-| `ClaodexApplication` | `claodex/cli.py:130` |
+| `ClaodexApplication` | `claodex/cli.py:133` |
 | `Router` | `claodex/router.py:97` |
 | `extract_room_events_from_window` | `claodex/extract.py:193` |
 | `verify_prefill` | `claodex/tmux_ops.py:266` |
@@ -198,6 +199,7 @@ State on disk:
 | `InputEditor` | `claodex/input_editor.py:71` |
 | `Participant` | `claodex/state.py:28` |
 | `register.py:main` | `claodex/skill/scripts/register.py:350` |
+| `clear_poll_latch` | `claodex/router.py:582` |
 | `HEADER_LINE_PATTERN` | `claodex/router.py:46` |
 
 ## Known Gotchas

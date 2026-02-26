@@ -273,7 +273,7 @@ Each line in `.claodex/ui/events.jsonl`:
 | `sent` | Message delivered to an agent |
 | `recv` | Response received from an agent |
 | `collab` | Collab lifecycle (start, routing, halt, converge) |
-| `watch` | Pending watch (created, expired, error, replaced) |
+| `watch` | Pending watch (created, expired, error) |
 | `error` | Error condition |
 | `system` | System lifecycle (startup, shutdown, registration) |
 | `status` | `/status` command output |
