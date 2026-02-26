@@ -1,180 +1,165 @@
 # changelog
 
-## 2026-02-26 — fix dropped unrouted responses on immediate `/halt`
+## 2026-02-26 — collab routing reliability fixes
 
-**problem**: when a collab was halted immediately after one agent replied, the
-response could disappear from subsequent peer context. users observed this as
-"dropped" messages after `/halt` + follow-up turns.
+this batch fixes ten bugs in the message routing and collaboration subsystems.
+all were discovered through live two-agent sessions. they fall into four
+categories: **delivery correctness**, **response detection**, **cursor
+lifecycle**, and **UI fidelity**.
 
-**root cause**: `_run_collab()` always called `Router.sync_delivery_cursors()`
-for both targets in `finally`. on `user_halt`, if a response had been received
-but not yet routed onward, syncing both delivery cursors marked that response as
-already delivered to the peer even though no routed send occurred.
+### delivery correctness
 
-**solution**:
-- `Router.sync_delivery_cursors()` now accepts an optional target subset and
-  validates agent names.
-- `_run_collab()` tracks whether the latest response was received but still
-  unrouted. on `user_halt`, it syncs only the opposite target so the unrouted
-  peer cursor is preserved for next normal-mode delta delivery.
-- tests were updated/added for selective sync behavior and invalid-target
-  validation.
+**1. missing user context in routed collab messages**
 
-files changed: `claodex/cli.py`, `claodex/router.py`, `tests/test_cli.py`,
-`tests/test_router.py`, `docs/codemap.md`
+- **symptom**: peer agent received only the response text during `[COLLAB]`
+  handoff — not the user messages that prompted it.
+- **root cause**: `send_routed_message()` built payloads from `response_text`
+  alone, never calling `build_delta_for_target()`. undelivered user events in
+  the source JSONL were skipped and their delivery cursors advanced anyway.
+  secondarily, the REPL watch-replacement path discarded earlier
+  `PendingSend.blocks` when a second message was sent to an already-thinking
+  agent, losing exchange log history.
+- **fix**: `send_routed_message()` now fetches the undelivered delta, filters
+  out source-agent assistant rows (already forwarded via `response_text`),
+  and prepends remaining user events. REPL watch replacement preserves prior
+  blocks and the earliest `sent_at`.
+- **files**: `router.py`, `cli.py`, `test_router.py`, `test_cli.py`
+
+**2. initial user message repeated within collab**
+
+- **symptom**: the user's initial `/collab` message appeared twice in the
+  routed payload — once as delta and once as the explicit message.
+- **fix**: delta extraction now skips the echo. `send_routed_message` accepts
+  an `echoed_user_anchor` parameter; the first matching user row in the delta
+  is dropped as a routed echo. comparison is normalized (collapsed whitespace)
+  with at-most-one-match semantics.
+- **files**: `router.py`, `test_router.py`
+
+**3. echo dedup dropping all matching user rows in routed delta**
+
+- **symptom**: when a legitimate user message happened to match a previously
+  routed echo, all instances were stripped — not just the first echo.
+- **root cause**: echo dedup iterated all delta rows and dropped every match
+  rather than stopping after the first.
+- **fix**: `echo_dropped` flag ensures only the first matching row is removed;
+  subsequent identical user rows pass through as legitimate messages.
+- **files**: `router.py`, `test_router.py`
+
+**4. interjection routing and ordering**
+
+- **symptom**: user interjections typed during collab were delivered only to
+  the next target, not replayed to the other agent. when delivered, they were
+  placed before delta rows instead of in chronological order.
+- **fix**: interjections are now replayed to both agents across consecutive
+  turns. ordering within the payload reflects the actual timeline: delta rows
+  first (events predating the turn), then interjections (typed during the
+  turn), then the peer response.
+- **files**: `cli.py`, `router.py`, `test_cli.py`, `test_router.py`
+
+### response detection
+
+**5. stop-event fallback returning stale assistant text**
+
+- **symptom**: agent-initiated `[COLLAB]` detection silently failed. the idle
+  poll detected a response but returned a 90-word intermediate frame instead
+  of the 227-word final response. the `[COLLAB]` signal on the last line was
+  permanently lost.
+- **root cause**: the stop-event fallback in `poll_for_response` /
+  `wait_for_response` races against JSONL flushes. claude code writes the
+  debug-log Stop event before the final assistant text is flushed to the
+  session JSONL. `_latest_assistant_message_between` returned whatever was on
+  disk — often an intermediate frame from before a tool call.
+- **fix**: new boundary-aware extractor
+  `_latest_claude_stop_fallback_message_between` treats every `user/user` row
+  (including `tool_result` rows) as a staleness boundary. if the final
+  assistant text hasn't appeared past the last boundary, returns `None` and
+  the stop-event latch survives to the next poll cycle.
+- **residual risk**: consecutive text-only assistant frames with no intervening
+  user boundary — not observed in practice.
+- **files**: `router.py`, `extract.py`, `test_router.py`
+
+**6. stop-event fallback boundaries for empty/meta-only user rows**
+
+- **symptom**: stale assistant text still returned when the intervening user
+  boundary was an empty string or meta-only content (e.g.,
+  `<system-reminder>` injections).
+- **root cause**: boundary logic had three branches from turn-anchoring:
+  `tool_result` rows and non-empty non-meta text rows reset the boundary, but
+  empty and meta-only text rows were silently skipped. correct for turn
+  anchoring, incorrect for staleness detection.
+- **fix**: collapsed to one unconditional reset: every `entry_type == "user"
+  and role == "user"` row resets the boundary. removed now-unused helpers
+  (`_extract_claude_user_text`, `_is_tool_result_only_claude_user_entry`).
+- **files**: `router.py`, `test_router.py`
+
+### cursor lifecycle
+
+**7. stale delivery cursors leaking extra user headers after collab**
+
+- **symptom**: first normal-mode message after collab included an extra
+  `--- user ---` block — an echo of a previously routed message leaking as
+  undelivered delta.
+- **root cause**: on collab termination, the last received response is never
+  routed onward. the delivery cursor for the non-final agent was stale by one
+  turn, causing `build_delta_for_target()` to pick up echo artifacts.
+- **fix**: `Router.sync_delivery_cursors()` aligns both delivery cursors to
+  current peer read positions. called in `_run_collab()`'s `finally` block so
+  all exit paths are covered (converged, halted, error, turn limit).
+- **files**: `router.py`, `cli.py`, `test_router.py`, `test_cli.py`
+
+**8. `/halt` dropping unrouted responses from peer context**
+
+- **symptom**: when a collab was halted immediately after one agent replied
+  (before routing to the peer), the response disappeared from subsequent peer
+  context entirely.
+- **root cause**: `sync_delivery_cursors()` (fix #7) unconditionally advanced
+  both cursors. on early `/halt`, this marked the responding agent's output as
+  "delivered" to a peer that never received it.
+- **fix**: `_run_collab()` tracks `last_unrouted_response_agent`. on
+  `user_halt`, the peer target that didn't receive the response is excluded
+  from cursor sync. `sync_delivery_cursors()` now accepts an optional target
+  subset with validation. other exit paths (converged, turns_reached, error)
+  still sync all cursors.
+- **files**: `cli.py`, `router.py`, `test_cli.py`, `test_router.py`,
+  `codemap.md`
+
+### UI fidelity
+
+**9. sidebar think counter underreporting during collab**
+
+- **symptom**: sidebar `think` counter showed only in-flight time for the
+  current agent instead of accumulating across completed collab turns.
+- **root cause**: sidebar derives completed-thinking time by pairing
+  `sent(target)` with `recv(agent)` events. `_run_collab()` emitted `recv`
+  events but not `sent` events for collab sends.
+- **fix**: `_run_collab()` now emits `sent` UI events for all collab send
+  sites: seed-turn routed send, user-initiated collab start send, and each
+  routed send in the main loop.
+- **files**: `cli.py`, `test_cli.py`
+
+### refactoring
+
+**10. shared claude parsing helpers**
+
+- `_extract_claude_assistant_text`, `_extract_claude_user_text`, and
+  `_is_tool_result_only_claude_user_entry` moved from `router.py` to
+  `extract.py` and imported by both modules, eliminating duplication.
+  `_extract_claude_room_events` now uses the shared assistant text helper.
+- **files**: `extract.py`, `router.py`
+
+### summary
+
+| # | category | fix | files |
+|---|---|---|---|
+| 1 | delivery | user context in routed messages | router, cli, tests |
+| 2 | delivery | initial message echo suppression | router, tests |
+| 3 | delivery | echo dedup scoping (first-match only) | router, tests |
+| 4 | delivery | interjection routing + chronological ordering | cli, router, tests |
+| 5 | detection | stop-event fallback staleness (boundary-aware) | router, extract, tests |
+| 6 | detection | stop-event boundary for empty/meta user rows | router, tests |
+| 7 | cursor | stale delivery cursors after collab exit | router, cli, tests |
+| 8 | cursor | selective sync on `/halt` (preserve unrouted peer) | cli, router, tests |
+| 9 | UI | sidebar think counter `sent` event emission | cli, tests |
+| 10 | refactor | shared claude parsing helpers in extract.py | extract, router |
 
 verified: `PYTHONPATH=. pytest -q` → 211 passed
-
-## 2026-02-26 — fix sidebar think counter underreporting during collab
-
-**problem**: the sidebar `think` counter stayed low during long collab runs,
-typically showing only in-flight time for the currently active agent instead of
-accumulating completed collab turns.
-
-**root cause**: sidebar completed-thinking derivation pairs `sent(target)` events
-with `recv(agent)` events. `_run_collab()` emitted `recv` events but did not emit
-`sent` events for collab sends, so completed turn durations during collab were
-never counted.
-
-**solution**: `_run_collab()` now emits `sent` UI events for all collab send
-sites: seed-turn routed send, user-initiated collab start send, and each routed
-send in the main collab loop. added CLI tests that assert sent-event emission for
-non-seeded, seeded, and multi-turn routed collab paths.
-
-files changed: `claodex/cli.py`, `tests/test_cli.py`
-
-verified: `PYTHONPATH=. pytest -q tests/test_cli.py` → 49 passed
-
-## 2026-02-26 — fix stop-event fallback boundaries for all user row types
-
-**problem**: the stop-event fallback in `_latest_claude_stop_fallback_message_between`
-still returned stale assistant text when the intervening user boundary was an empty
-string or meta-only content (e.g., `<system-reminder>` injections). these user rows
-were skipped as boundaries even though they represent real agent input that invalidates
-prior assistant text.
-
-**root cause**: the boundary logic had three branches inherited from turn-anchoring:
-tool_result rows reset the boundary, non-empty non-meta text rows reset the boundary,
-but empty and meta-only text rows were silently skipped. this made sense for turn
-anchoring (where meta rows shouldn't start new turns) but was incorrect for staleness
-detection — any `user/user` row means the assistant will produce a fresh response,
-making prior text stale.
-
-**solution**: collapsed the three branches into one unconditional reset: every
-`entry_type == "user" and role == "user"` row resets `latest_user_boundary_line` and
-clears `latest_assistant_text`. removed now-unused imports
-(`_extract_claude_user_text`, `_is_tool_result_only_claude_user_entry`). added a
-clarifying comment on the anchor filter in `send_routed_message` documenting the
-at-most-one-match assumption.
-
-files changed: `claodex/router.py`, `tests/test_router.py`
-
-verified: `PYTHONPATH=. pytest -q tests/test_router.py tests/test_cli.py` → 100 passed
-
-## 2026-02-26 — fix stop-event fallback returning stale assistant text
-
-**problem**: agent-initiated `[COLLAB]` detection silently failed. the idle
-poll detected a response but reported 90 words instead of the expected 227 —
-missing the `[COLLAB]` signal on the last line. the response was consumed
-(watch deleted, latch cleared), so the signal was permanently lost.
-
-**root cause**: the stop-event fallback in `poll_for_response` (and
-`wait_for_response`) races against JSONL flushes. claude code writes the
-debug-log Stop event before the final assistant text block is flushed to the
-session JSONL. when the fallback fires, `_latest_assistant_message_between`
-returns whichever assistant text is on disk — which can be an intermediate
-frame from before a tool call, not the final response. in the observed case,
-a 90-word "running tests" text appeared before a `tool_result` boundary, while
-the 227-word response with `[COLLAB]` hadn't been flushed yet (32ms gap
-between generation timestamp and Stop event).
-
-**solution**: replaced `_latest_assistant_message_between` with a new
-boundary-aware extractor `_latest_claude_stop_fallback_message_between` for
-both `wait_for_response` and `poll_for_response` stop-event paths. the new
-method treats every user row (including `tool_result` rows) as a boundary that
-resets the "latest assistant text" accumulator. if the final assistant text
-hasn't been flushed past the last boundary, the method returns `None` and the
-stop-event latch survives to the next poll cycle.
-
-additional fixes:
-- entry-level `isSidechain` / `isMeta` rows are skipped, consistent with the
-  primary extraction path in `extract.py`
-- shared claude parsing helpers (`_extract_claude_assistant_text`,
-  `_extract_claude_user_text`, `_is_tool_result_only_claude_user_entry`) moved
-  to `extract.py` and imported by `router.py`, eliminating duplication
-- `_extract_claude_room_events` now uses the shared assistant text helper
-
-**residual risk**: if claude emits consecutive text-only assistant frames with
-no intervening user boundary and the stop event fires before the last one is
-flushed, the earlier frame would still be returned. this pattern has not been
-observed in practice.
-
-files changed: `claodex/router.py`, `claodex/extract.py`,
-`tests/test_router.py`
-
-verified: `PYTHONPATH=. pytest -q` → 201 passed
-
-## 2026-02-26 — fix missing user context in routed collab messages
-
-**problem**: when a user sent messages to an agent and that agent responded
-with `[COLLAB]`, the peer agent received only the agent's response — not the
-user messages that prompted it. separately, when the user sent a second message
-while the agent was still thinking, the earlier message's `PendingSend` blocks
-were discarded from the exchange log (delivery to the agent itself was
-unaffected). the peer had no visibility into what was originally asked.
-
-**root cause**: `send_routed_message()` built its payload exclusively from the
-explicit `response_text` parameter and optional `user_interjections`. it never
-called `build_delta_for_target()` to include undelivered events from the source
-agent's JSONL. it then advanced the delivery cursor past those events, silently
-marking them as delivered without ever sending them. a secondary issue in the
-REPL watch-replacement logic discarded earlier `PendingSend` blocks when a
-second message was sent to an already-thinking agent, causing the exchange log
-to lose earlier messages.
-
-**solution**:
-- `send_routed_message()` now calls `build_delta_for_target()` to fetch
-  undelivered events from the source agent's JSONL, filters out source-agent
-  assistant rows (already forwarded via `response_text`), and prepends the
-  remaining user events to the payload. the delivery cursor advances from the
-  delta cursor rather than the raw read cursor.
-- the REPL watch-replacement path now preserves prior `PendingSend.blocks` and
-  the earliest `sent_at` timestamp when a second message supersedes a pending
-  watch, so seeded exchange logs retain the full message history.
-- collab exchange logging now records interjections directly from the drained
-  queue rather than slicing `pending.blocks`, preventing double-logging of
-  delta events that `send_routed_message()` now includes.
-
-files changed: `claodex/router.py`, `claodex/cli.py`,
-`tests/test_router.py`, `tests/test_cli.py`
-
-verified: `PYTHONPATH=. pytest -q tests/test_router.py tests/test_cli.py`
-→ 90 passed; `PYTHONPATH=. pytest -q` → 196 passed
-
-## 2026-02-26 — fix stale delivery cursors after collab termination
-
-**problem**: after a collab ended, the first normal-mode message to an agent
-included an extra `--- user ---` block — an echo of a previously routed message
-leaking through the peer's JSONL as undelivered delta.
-
-**root cause**: when collab terminates (convergence, halt, error, or turn
-limit), the last received response is never routed onward. the delivery cursor
-for the non-final agent remains stale by one turn. when the user sends the next
-message, `compose_user_message()` → `build_delta_for_target()` picks up the
-stale events — including user entries that are echoes of previously routed
-messages — and prepends them as delta. the prior routed-context fix made this
-more visible because `strip_injected_context()` now cleanly extracts user
-blocks from routed messages, producing recognizable duplicate user headers
-instead of opaque nested blobs.
-
-**solution**: added `Router.sync_delivery_cursors()` which aligns both delivery
-cursors to current peer read positions. called in `_run_collab()`'s `finally`
-block so all exit paths (converged, halted, error, turn limit) are covered. a
-sync failure is logged but does not prevent exchange log close or interjection
-drain.
-
-files changed: `claodex/router.py`, `claodex/cli.py`,
-`tests/test_router.py`, `tests/test_cli.py`
-
-verified: `PYTHONPATH=. pytest -q tests/test_router.py tests/test_cli.py`
-→ 93 passed; `PYTHONPATH=. pytest -q` → 199 passed
