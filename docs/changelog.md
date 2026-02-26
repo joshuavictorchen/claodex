@@ -1,5 +1,31 @@
 # changelog
 
+## 2026-02-26 — fix stop-event fallback boundaries for all user row types
+
+**problem**: the stop-event fallback in `_latest_claude_stop_fallback_message_between`
+still returned stale assistant text when the intervening user boundary was an empty
+string or meta-only content (e.g., `<system-reminder>` injections). these user rows
+were skipped as boundaries even though they represent real agent input that invalidates
+prior assistant text.
+
+**root cause**: the boundary logic had three branches inherited from turn-anchoring:
+tool_result rows reset the boundary, non-empty non-meta text rows reset the boundary,
+but empty and meta-only text rows were silently skipped. this made sense for turn
+anchoring (where meta rows shouldn't start new turns) but was incorrect for staleness
+detection — any `user/user` row means the assistant will produce a fresh response,
+making prior text stale.
+
+**solution**: collapsed the three branches into one unconditional reset: every
+`entry_type == "user" and role == "user"` row resets `latest_user_boundary_line` and
+clears `latest_assistant_text`. removed now-unused imports
+(`_extract_claude_user_text`, `_is_tool_result_only_claude_user_entry`). added a
+clarifying comment on the anchor filter in `send_routed_message` documenting the
+at-most-one-match assumption.
+
+files changed: `claodex/router.py`, `tests/test_router.py`
+
+verified: `PYTHONPATH=. pytest -q tests/test_router.py tests/test_cli.py` → 100 passed
+
 ## 2026-02-26 — fix stop-event fallback returning stale assistant text
 
 **problem**: agent-initiated `[COLLAB]` detection silently failed. the idle
