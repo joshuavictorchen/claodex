@@ -717,7 +717,8 @@ Agents are **A** and **B**. All payloads use `--- {source} ---` header blocks.
 
 > User sends a message to A at the start of a session.
 
-**input pane**: `A ❯ hello`
+**input pane**:
+1. `A ❯ hello`
 
 **A sees**:
 ```
@@ -733,7 +734,10 @@ hello
 
 > User sends to A, A responds, user switches and sends to B.
 
-**input pane**: `A ❯ hello` → A responds → `B ❯ your turn`
+**input pane**:
+1. `A ❯ hello`
+2. A responds
+3. `B ❯ your turn`
 
 **A sees**:
 ```
@@ -760,7 +764,12 @@ your turn
 > User sends N messages to A (A responds to each), then sends to B. B receives
 > the full A conversation as context.
 
-**input pane**: `A ❯ msg1` → A responds → `A ❯ msg2` → A responds → `B ❯ catch up`
+**input pane**:
+1. `A ❯ msg1`
+2. A responds
+3. `A ❯ msg2`
+4. A responds
+5. `B ❯ catch up`
 
 **B sees**:
 ```
@@ -787,9 +796,14 @@ catch up
 > User exchanges with A, switches to B, then back to A. Each agent sees what
 > it missed.
 
-**input pane**: `A ❯ msg` → A responds → `B ❯ msg` → B responds → `A ❯ update`
+**input pane**:
+1. `A ❯ msg`
+2. A responds
+3. `B ❯ msg`
+4. B responds
+5. `A ❯ update`
 
-**A sees** (on the second send):
+**A sees** (on step 5):
 ```
 --- user ---
 <user's message to B>
@@ -809,7 +823,10 @@ A does NOT see its own prior exchange echoed back.
 
 > User sends to A, then sends again before A responds.
 
-**input pane**: `A ❯ first` → (A still thinking) → `A ❯ second`
+**input pane**:
+1. `A ❯ first`
+2. (A still thinking)
+3. `A ❯ second`
 
 **A sees**: each message delivered separately as it is submitted. both appear
 as individual `--- user ---` blocks in A's context. no delta (B was not
@@ -832,7 +849,10 @@ second
 > User sends to A, then immediately switches and sends to B. A has not
 > responded yet.
 
-**input pane**: `A ❯ task for you` → (A still thinking) → `B ❯ different task`
+**input pane**:
+1. `A ❯ task for you`
+2. (A still thinking)
+3. `B ❯ different task`
 
 **A sees**:
 ```
@@ -856,7 +876,11 @@ different task
 
 > User sends to A twice (before A responds), then switches and sends to B.
 
-**input pane**: `A ❯ first` → `A ❯ second` → (A still thinking) → `B ❯ your turn`
+**input pane**:
+1. `A ❯ first`
+2. `A ❯ second`
+3. (A still thinking)
+4. `B ❯ your turn`
 
 **B sees**: both user messages to A as delta, but no A response (A hasn't
 responded):
@@ -878,7 +902,11 @@ your turn
 > User sends to A twice before A responds. A eventually responds (to both).
 > User then switches and sends to B.
 
-**input pane**: `A ❯ first` → `A ❯ second` → A responds → `B ❯ your turn`
+**input pane**:
+1. `A ❯ first`
+2. `A ❯ second`
+3. A responds
+4. `B ❯ your turn`
 
 **B sees**: both user messages and A's response:
 ```
@@ -902,9 +930,14 @@ your turn
 > User sends to A, then to B before A responds. B responds first, then A
 > responds. User sends to A again.
 
-**input pane**: `A ❯ task` → `B ❯ other task` → B responds → A responds → `A ❯ follow-up`
+**input pane**:
+1. `A ❯ task`
+2. `B ❯ other task`
+3. B responds
+4. A responds
+5. `A ❯ follow-up`
 
-**A sees** (on follow-up): B's exchange as delta:
+**A sees** (on step 5): B's exchange as delta:
 ```
 --- user ---
 other task
@@ -923,9 +956,14 @@ follow-up
 > Same as N9 but user sends to A before A has responded. A eventually sees
 > B's exchange as delta on the user's follow-up.
 
-**input pane**: `A ❯ task` → `B ❯ other task` → B responds → (A still thinking) → `A ❯ follow-up`
+**input pane**:
+1. `A ❯ task`
+2. `B ❯ other task`
+3. B responds
+4. (A still thinking)
+5. `A ❯ follow-up`
 
-**A sees** (follow-up delivery):
+**A sees** (on step 5):
 ```
 --- user ---
 other task
@@ -946,9 +984,16 @@ when A eventually responds, it reflects both messages.
 
 > User alternates between agents. each receives the other's exchange as delta.
 
-**input pane**: `A ❯ m1` → A responds → `B ❯ m2` → B responds → `A ❯ m3` → A responds → `B ❯ m4`
+**input pane**:
+1. `A ❯ m1`
+2. A responds
+3. `B ❯ m2`
+4. B responds
+5. `A ❯ m3`
+6. A responds
+7. `B ❯ m4`
 
-**B sees** (on m4): only the exchanges since B's last delivery — m3 + A's
+**B sees** (on step 7): only the exchanges since B's last delivery — m3 + A's
 response:
 ```
 --- user ---
@@ -972,7 +1017,8 @@ m2.
 
 > User starts a collab targeting A. agents alternate turns.
 
-**input pane**: `A ❯ /collab discuss the API`
+**input pane**:
+1. `A ❯ /collab discuss the API`
 
 **turn 1 — A sees**:
 ```
@@ -1007,7 +1053,9 @@ Alternation continues until termination.
 
 > User types a message while an agent is thinking during collab.
 
-**input pane**: (during A's turn) `important note`
+**input pane**:
+1. (collab active, A is thinking)
+2. `important note`
 
 **next routed turn — B sees**:
 ```
@@ -1051,7 +1099,9 @@ delivery state is synchronized.
 
 > User sends to A in normal mode. A's response ends with `[COLLAB]`.
 
-**input pane**: `A ❯ design the auth flow`
+**input pane**:
+1. `A ❯ design the auth flow`
+2. A responds with `[COLLAB]` on the last line
 
 **A sees**: the user's message (normal delivery). A responds with `[COLLAB]`.
 
@@ -1076,7 +1126,9 @@ Collab continues from turn 2 as in C1.
 > A responds during collab. user types `/halt` before the response is routed
 > to B.
 
-**input pane**: `/halt`
+**input pane**:
+1. (collab active, A just responded)
+2. `/halt`
 
 **behavior**: collab stops. A's response was received but never delivered to B.
 
@@ -1104,7 +1156,10 @@ content.
 
 > User starts collab, then halts before the target agent responds.
 
-**input pane**: `/collab do the thing` → `/halt`
+**input pane**:
+1. `A ❯ /collab do the thing`
+2. (A still thinking)
+3. `/halt`
 
 **behavior**: the CLI waits for the current turn to complete or time out.
 
