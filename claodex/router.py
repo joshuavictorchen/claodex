@@ -125,9 +125,6 @@ class Router:
         self._stuck_state: dict[str, StuckCursorState] = {}
         # byte offset into the claude debug log to avoid re-reading from the start
         self._debug_log_offset: int = 0
-        # latched stop-event flags for poll_for_response, keyed by
-        # (target_agent, before_cursor) to survive across idle polls
-        self._poll_stop_seen: set[tuple[str, int]] = set()
         self._stop_event_re = re.compile(CLAUDE_STOP_EVENT_RE)
 
     def refresh_source(self, source_agent: str) -> int:
@@ -519,7 +516,6 @@ class Router:
         """
         target_agent = pending.target_agent
         participant = self.participants.for_agent(target_agent)
-        send_time = pending.sent_at or datetime.now(timezone.utc)
 
         if not self._pane_alive(participant.tmux_pane):
             return None
@@ -542,8 +538,6 @@ class Router:
                 end_line=turn_end.marker_line,
             )
             if assistant_text is not None:
-                # clean up any latched stop-event entry for this watch
-                self._poll_stop_seen.discard((target_agent, pending.before_cursor))
                 return ResponseTurn(
                     agent=target_agent,
                     text=assistant_text,
@@ -551,42 +545,16 @@ class Router:
                     received_at=datetime.now(timezone.utc),
                 )
 
-        # stop-event fallback for claude; latch the flag so consuming
-        # debug-log bytes on one poll doesn't lose the event on the next
-        if target_agent == "claude":
-            latch_key = (target_agent, pending.before_cursor)
-            saw_stop_event = latch_key in self._poll_stop_seen
-            if not saw_stop_event:
-                saw_stop_event = self._scan_claude_debug_stop_event(
-                    participant, send_time
-                )
-                if saw_stop_event:
-                    self._poll_stop_seen.add(latch_key)
-            if saw_stop_event:
-                assistant_text = self._latest_assistant_message_between(
-                    source_agent=target_agent,
-                    start_line=pending.before_cursor,
-                    end_line=current_cursor,
-                )
-                if assistant_text is not None:
-                    self._poll_stop_seen.discard(latch_key)
-                    return ResponseTurn(
-                        agent=target_agent,
-                        text=assistant_text,
-                        source_cursor=current_cursor,
-                        received_at=datetime.now(timezone.utc),
-                    )
-
         return None
 
     def clear_poll_latch(self, agent: str, before_cursor: int) -> None:
-        """Remove a latched stop-event entry for a discarded watch.
+        """No-op compatibility hook for discarded watch cleanup.
 
         Args:
             agent: Agent name.
             before_cursor: The before_cursor from the PendingSend.
         """
-        self._poll_stop_seen.discard((agent, before_cursor))
+        del agent, before_cursor
 
     def _scan_turn_end_marker(
         self,

@@ -43,7 +43,7 @@ claodex/
 - **Interface**: `Router.send_user_message()`, `Router.send_routed_message()`, `Router.wait_for_response()`, `Router.poll_for_response()`, `Router.clear_poll_latch()`, `render_block()`, `strip_injected_context()`
 - **Depends on**: extract, state, constants, errors; Claude debug log (`~/.claude/debug/{session_id}.txt`) as side-channel for Stop-event fallback
 - **Depended on by**: cli
-- **Invariants**: delivery cursor never exceeds peer read cursor; read cursor never moves backward; user messages are stripped of injected context before delta composition; Claude turn detection uses `turn_duration → Stop-event → timeout` priority chain; poll stop-event latches are keyed by `(agent, before_cursor)` and must be cleared when a watch is discarded; unexpected non-meta user input during collab wait triggers interference error
+- **Invariants**: delivery cursor never exceeds peer read cursor; read cursor never moves backward; user messages are stripped of injected context before delta composition; `wait_for_response` Claude turn detection uses `turn_duration → Stop-event → timeout` priority chain; `poll_for_response` relies on deterministic turn markers only (no Stop-event completion); unexpected non-meta user input during collab wait triggers interference error
 
 #### Extraction (`claodex/extract.py`)
 

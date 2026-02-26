@@ -1243,19 +1243,19 @@ def test_poll_for_response_returns_none_when_pane_dead(tmp_path):
     assert result is None
 
 
-# -- stop-event latch across polls --
+# -- poll stop-event behavior --
 
 
-def test_poll_for_response_stop_event_latch_survives_across_polls(tmp_path):
-    """Stop event consumed on first poll is latched so second poll still detects completion."""
+def test_poll_for_response_ignores_stop_event_without_turn_duration(tmp_path):
+    """Non-blocking poll ignores stop events until turn_duration is present."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     ensure_state_layout(workspace)
 
     claude_session = tmp_path / "claude.jsonl"
     codex_session = tmp_path / "codex.jsonl"
-    # user entry only — no assistant text yet, no turn_duration marker
-    _write_jsonl(claude_session, _claude_entries("hello", "")[:1])
+    # no turn_duration marker yet
+    _write_jsonl(claude_session, _claude_entries("hello", "partial answer"))
     _write_jsonl(codex_session, _codex_entries("ack", "ack"))
 
     participants = _participants(workspace, claude_session, codex_session)
@@ -1264,7 +1264,7 @@ def test_poll_for_response_stop_event_latch_survives_across_polls(tmp_path):
     write_delivery_cursor(workspace, "codex", 0)
     write_delivery_cursor(workspace, "claude", 3)
 
-    # write a fake stop event to a tmp debug log
+    # write a stop event to a tmp debug log
     debug_log = tmp_path / "claude-session.txt"
     debug_log.write_text(
         "2026-02-22T10:00:01.000Z [DEBUG] Getting matching hook commands for Stop\n"
@@ -1292,60 +1292,19 @@ def test_poll_for_response_stop_event_latch_survives_across_polls(tmp_path):
             sent_at=datetime(2026, 2, 22, 10, 0, 0, tzinfo=timezone.utc),
         )
 
-        # first poll: stop event consumed but no assistant text → None
+        # stop events alone should not complete non-blocking poll
         result = router.poll_for_response(pending)
         assert result is None
-        # latch should be set
-        assert ("claude", 0) in router._poll_stop_seen
 
-        # now add assistant text
-        _write_jsonl(claude_session, _claude_entries("hello", "latched answer"))
+        # add deterministic turn marker; now poll should complete
+        _write_jsonl(claude_session, _claude_turn_entries("hello", "final answer"))
         write_read_cursor(workspace, "claude", 0)
 
-        # second poll: latch means stop event is still known, now text is available
         result = router.poll_for_response(pending)
         assert result is not None
-        assert result.text == "latched answer"
-        # latch cleaned up after success
-        assert ("claude", 0) not in router._poll_stop_seen
+        assert result.text == "final answer"
     finally:
         router_module.CLAUDE_DEBUG_LOG_PATTERN = original_pattern
-
-
-def test_poll_stop_latch_cleaned_on_marker_success(tmp_path):
-    """Latch entry is cleaned up when marker-based detection succeeds."""
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    ensure_state_layout(workspace)
-
-    claude_session = tmp_path / "claude.jsonl"
-    codex_session = tmp_path / "codex.jsonl"
-    _write_jsonl(claude_session, _claude_turn_entries("hello", "world"))
-    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
-
-    participants = _participants(workspace, claude_session, codex_session)
-    write_read_cursor(workspace, "claude", 0)
-    write_read_cursor(workspace, "codex", 3)
-    write_delivery_cursor(workspace, "codex", 0)
-    write_delivery_cursor(workspace, "claude", 3)
-
-    router = Router(
-        workspace_root=workspace,
-        participants=participants,
-        paste_content=lambda pane, content: None,
-        pane_alive=lambda pane: True,
-        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
-    )
-
-    # pre-seed a latch entry to verify it gets cleaned up
-    router._poll_stop_seen.add(("claude", 0))
-
-    pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello")
-    result = router.poll_for_response(pending)
-    assert result is not None
-    assert result.text == "world"
-    # latch should be cleaned up on marker-based success
-    assert ("claude", 0) not in router._poll_stop_seen
 
 
 # -- empty [COLLAB] edge case --
