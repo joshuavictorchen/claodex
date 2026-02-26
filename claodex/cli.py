@@ -841,12 +841,11 @@ class ClaodexApplication:
                     self._log_event(bus, "sent", f"-> {target}", target=target)
                     self._mark_agent_thinking(bus, target, sent_at=pending.sent_at)
 
-                    # track for idle [COLLAB] detection; supersede warning
-                    # if there was already a pending watch for this target
+                    # track for idle [COLLAB] detection; clean up any prior
+                    # watch latch if there was already one for this target
                     if target in self._pending_watches:
                         old = self._pending_watches[target]
                         router.clear_poll_latch(target, old.before_cursor)
-                        self._log_event(bus, "watch", f"replaced pending collab watch for {target}")
                     self._pending_watches[target] = pending
                 except ClaodexError as exc:
                     self._log_event(bus, "error", str(exc))
