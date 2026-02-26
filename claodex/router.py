@@ -351,9 +351,10 @@ class Router:
             target_agent: Recipient agent.
             source_agent: Source agent whose response is being routed.
             response_text: Source response text.
-            user_interjections: Optional user messages to prepend before
-                delta and routed peer response blocks. Each becomes a
-                separate ``--- user ---`` block in the payload.
+            user_interjections: Optional user messages inserted after
+                delta rows but before the peer response, reflecting
+                chronological order. Each becomes a separate
+                ``--- user ---`` block in the payload.
             echoed_user_anchor: Optional previously injected payload text.
                 When provided, any matching user delta row is treated as
                 an echo of routed input and omitted.
@@ -373,15 +374,9 @@ class Router:
             if echoed_user_body:
                 normalized_echoed_user_anchor = _normalize_for_anchor(echoed_user_body)
 
-        interjection_blocks: list[tuple[str, str]] = []
-        for text in user_interjections or ():
-            text = text.strip()
-            if text:
-                interjection_blocks.append(("user", text))
-
         # include undelivered user rows from the source log, but skip source
         # assistant rows because response_text already forwards that response
-        blocks: list[tuple[str, str]] = [*interjection_blocks]
+        blocks: list[tuple[str, str]] = []
         echo_dropped = False
         for event in delta_events:
             sender = event["from"]
@@ -399,6 +394,12 @@ class Router:
                 echo_dropped = True
                 continue
             blocks.append((sender, body))
+        # interjections were typed during the peer's turn, so they go after
+        # delta rows (which predate the turn) but before the peer response
+        for text in user_interjections or ():
+            text = text.strip()
+            if text:
+                blocks.append(("user", text))
         blocks.append((source_agent, response_text))
 
         payload = "\n\n".join(render_block(source, body) for source, body in blocks)

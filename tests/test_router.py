@@ -421,7 +421,8 @@ def test_send_user_message_stamps_sent_at_before_paste(tmp_path):
     assert pasted_payload == "--- user ---\nhello"
 
 
-def test_send_routed_message_prepends_user_interjections(tmp_path):
+def test_send_routed_message_orders_interjections_chronologically(tmp_path):
+    """Payload order: delta user rows, interjections, peer response."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     ensure_state_layout(workspace)
@@ -455,15 +456,17 @@ def test_send_routed_message_prepends_user_interjections(tmp_path):
     )
 
     assert len(sent_messages) == 1
-    assert sent_messages[0].startswith("--- user ---\nquestion one")
-    assert sent_messages[0].count("--- user ---") == 3
-    assert sent_messages[0].index("--- user ---\nquestion one") < sent_messages[0].index("--- user ---\ntask")
-    assert sent_messages[0].index("--- user ---\nquestion two") < sent_messages[0].index("--- user ---\ntask")
-    assert "--- user ---\ntask" in sent_messages[0]
-    assert "--- claude ---\npeer response" in sent_messages[0]
-    assert "--- user ---\nquestion one" in sent_messages[0]
-    assert sent_messages[0].endswith("--- claude ---\npeer response")
-    assert "--- claude ---\ndone" not in sent_messages[0]
+    payload = sent_messages[0]
+    # chronological: delta user row ("task") < interjections < peer response
+    assert payload.startswith("--- user ---\ntask")
+    assert payload.count("--- user ---") == 3
+    task_pos = payload.index("--- user ---\ntask")
+    q1_pos = payload.index("--- user ---\nquestion one")
+    q2_pos = payload.index("--- user ---\nquestion two")
+    peer_pos = payload.index("--- claude ---\npeer response")
+    assert task_pos < q1_pos < q2_pos < peer_pos
+    assert payload.endswith("--- claude ---\npeer response")
+    assert "--- claude ---\ndone" not in payload
     assert read_delivery_cursor(workspace, "codex") == read_read_cursor(workspace, "claude")
 
 
