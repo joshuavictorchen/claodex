@@ -707,97 +707,89 @@ Agents: claude ↔ codex
 
 ## Message Routing Matrix
 
-This section defines expected behavior for every feasible conversation logic
-branch. Each scenario specifies preconditions, the triggering action, and the
-exact payload and cursor effects. Agents are denoted **A** (first agent) and
-**B** (peer agent). Concrete examples use `claude`/`codex`.
-
-### Notation
-
-- `D(X)` — delivery cursor for agent X (tracks position in the peer's JSONL up
-  to which events have been delivered to X)
-- `R(X)` — read cursor for agent X (CLI's parse position in X's JSONL)
-- `delta(X)` — undelivered events from X's peer's JSONL between `D(X)` and
-  `R(peer(X))`
-- `→ X` — message pasted into agent X's pane
-- `← X` — response received from agent X
+Behavior contracts for every conversation routing branch. Each scenario shows
+what the user does in the input pane and the exact payload each agent receives.
+Agents are **A** and **B**. All payloads use `--- {source} ---` header blocks.
 
 ### Normal mode
 
-#### N1. User sends to A, no prior peer activity
+#### N1. First message, no history
 
-**precondition**: `D(A) == R(B)` (no undelivered peer events)
+> User sends a message to A at the start of a session.
 
-**action**: user submits message targeting A
+**input pane**: `A ❯ hello`
 
-**payload → A**:
+**A sees**:
 ```
 --- user ---
-<user message>
+hello
 ```
 
-**cursor effect**: `R(A)` advances as A processes; `D(A)` unchanged (no delta
-to deliver)
+**B sees**: nothing (not addressed)
 
-#### N2. User sends to A, prior peer activity exists
+---
 
-**precondition**: `D(A) < R(B)` (B produced events not yet delivered to A)
+#### N2. Basic round-trip, then switch
 
-**action**: user submits message targeting A
+> User sends to A, A responds, user switches and sends to B.
 
-**payload → A**:
-```
---- user ---
-<prior user message to B>
+**input pane**: `A ❯ hello` → A responds → `B ❯ your turn`
 
---- codex ---
-<B's response>
-
---- user ---
-<user's actual message>
-```
-
-**cursor effect**: `D(A)` advances to `R(B)` after successful paste
-
-**invariant**: each peer event appears in the delta exactly once. delta events
-are ordered chronologically. `strip_injected_context()` extracts the user's
-original message from previously-routed payloads so headers are not nested.
-
-#### N3. User sends multiple messages to A, then sends to B
-
-**precondition**: user sent N messages to A, A responded to each. user switches
-target to B.
-
-**action**: user submits message targeting B
-
-**payload → B**: all N user+A exchanges as delta, then the user's message:
+**A sees**:
 ```
 --- user ---
-<1st message to A>
+hello
+```
+
+**B sees**:
+```
+--- user ---
+hello
+
+--- claude ---
+<A's response>
+
+--- user ---
+your turn
+```
+
+---
+
+#### N3. Multiple exchanges with A, then switch to B
+
+> User sends N messages to A (A responds to each), then sends to B. B receives
+> the full A conversation as context.
+
+**input pane**: `A ❯ msg1` → A responds → `A ❯ msg2` → A responds → `B ❯ catch up`
+
+**B sees**:
+```
+--- user ---
+msg1
 
 --- claude ---
 <A's 1st response>
 
 --- user ---
-<2nd message to A>
+msg2
 
 --- claude ---
 <A's 2nd response>
 
-...
-
 --- user ---
-<user's message to B>
+catch up
 ```
 
-**cursor effect**: `D(B)` advances to `R(A)`
+---
 
-#### N4. User sends to A, switches to B, then back to A
+#### N4. Round-trip: A → B → A
 
-**precondition**: user exchanged with A, switched to B and exchanged, now sends
-to A again.
+> User exchanges with A, switches to B, then back to A. Each agent sees what
+> it missed.
 
-**payload → A**: B's exchange as delta, then user's message:
+**input pane**: `A ❯ msg` → A responds → `B ❯ msg` → B responds → `A ❯ update`
+
+**A sees** (on the second send):
 ```
 --- user ---
 <user's message to B>
@@ -806,170 +798,290 @@ to A again.
 <B's response>
 
 --- user ---
-<user's new message to A>
+update
 ```
 
-**cursor effect**: `D(A)` advances to `R(B)`
+A does NOT see its own prior exchange echoed back.
 
-**invariant**: A sees only the events it missed; no duplication of A's own
-prior messages.
+---
 
-#### N5. User sends to A while A is still thinking (watch replacement)
+#### N5. Stacked sends to same agent
 
-**precondition**: user sent message to A, A has not responded. user sends
-another message to A.
+> User sends to A, then sends again before A responds.
 
-**action**: second `send_user_message` to A
+**input pane**: `A ❯ first` → (A still thinking) → `A ❯ second`
 
-**payload → A**: second message with any new peer delta (typically none since B
-was not addressed)
+**A sees**: each message delivered separately as it is submitted. both appear
+as individual `--- user ---` blocks in A's context. no delta (B was not
+addressed).
 
-**effect**: the pending watch is replaced. if the first message had
-`PendingSend.blocks`, they are preserved on the replacement watch so that
-agent-initiated `[COLLAB]` exchange logs retain full history.
+```
+--- user ---
+first
+```
+then:
+```
+--- user ---
+second
+```
+
+---
+
+#### N6. Send to A, switch to B before A responds
+
+> User sends to A, then immediately switches and sends to B. A has not
+> responded yet.
+
+**input pane**: `A ❯ task for you` → (A still thinking) → `B ❯ different task`
+
+**A sees**:
+```
+--- user ---
+task for you
+```
+
+**B sees**: the user's message to A appears as delta (it is in A's log), but
+A's response does not (A hasn't responded yet):
+```
+--- user ---
+task for you
+
+--- user ---
+different task
+```
+
+---
+
+#### N7. Stacked sends to A, then switch to B
+
+> User sends to A twice (before A responds), then switches and sends to B.
+
+**input pane**: `A ❯ first` → `A ❯ second` → (A still thinking) → `B ❯ your turn`
+
+**B sees**: both user messages to A as delta, but no A response (A hasn't
+responded):
+```
+--- user ---
+first
+
+--- user ---
+second
+
+--- user ---
+your turn
+```
+
+---
+
+#### N8. Stacked sends to A, A responds, then switch to B
+
+> User sends to A twice before A responds. A eventually responds (to both).
+> User then switches and sends to B.
+
+**input pane**: `A ❯ first` → `A ❯ second` → A responds → `B ❯ your turn`
+
+**B sees**: both user messages and A's response:
+```
+--- user ---
+first
+
+--- user ---
+second
+
+--- claude ---
+<A's response>
+
+--- user ---
+your turn
+```
+
+---
+
+#### N9. Send to A, switch to B, B responds, A responds, send to A
+
+> User sends to A, then to B before A responds. B responds first, then A
+> responds. User sends to A again.
+
+**input pane**: `A ❯ task` → `B ❯ other task` → B responds → A responds → `A ❯ follow-up`
+
+**A sees** (on follow-up): B's exchange as delta:
+```
+--- user ---
+other task
+
+--- codex ---
+<B's response>
+
+--- user ---
+follow-up
+```
+
+---
+
+#### N10. Send to A, switch to B before A responds, B responds, send to A
+
+> Same as N9 but user sends to A before A has responded. A eventually sees
+> B's exchange as delta on the user's follow-up.
+
+**input pane**: `A ❯ task` → `B ❯ other task` → B responds → (A still thinking) → `A ❯ follow-up`
+
+**A sees** (follow-up delivery):
+```
+--- user ---
+other task
+
+--- codex ---
+<B's response>
+
+--- user ---
+follow-up
+```
+
+A receives the follow-up immediately. the pending response watch is replaced.
+when A eventually responds, it reflects both messages.
+
+---
+
+#### N11. Rapid alternation: A, B, A, B
+
+> User alternates between agents. each receives the other's exchange as delta.
+
+**input pane**: `A ❯ m1` → A responds → `B ❯ m2` → B responds → `A ❯ m3` → A responds → `B ❯ m4`
+
+**B sees** (on m4): only the exchanges since B's last delivery — m3 + A's
+response:
+```
+--- user ---
+m3
+
+--- claude ---
+<A's response to m3>
+
+--- user ---
+m4
+```
+
+B does NOT see m1/A's-first-response again — those were already delivered with
+m2.
+
+---
 
 ### Collab mode — user-initiated
 
-#### C1. User starts collab targeting A
+#### C1. Basic collab exchange
 
-**action**: `/collab [--turns N] [--start A] <message>`
+> User starts a collab targeting A. agents alternate turns.
 
-**turn 1 → A**:
+**input pane**: `A ❯ /collab discuss the API`
+
+**turn 1 — A sees**:
 ```
 --- user ---
-<prior peer delta if any>
-
---- user ---
-<collab message>
+discuss the API
 ```
 
-Delivered via `send_user_message()`. includes any undelivered B delta.
+(plus any prior B delta, if B had undelivered events)
 
-**turn 1 ← A**: CLI detects turn end (turn_duration / task_complete). response
-extracted.
-
-**turn 2 → B** (routed):
+**turn 2 — B sees**:
 ```
---- user ---
-<delta user rows from A's JSONL, excluding A's assistant rows and echoed anchor>
-
 --- claude ---
-<A's full response>
+<A's response>
 ```
 
-Delivered via `send_routed_message()`. `D(B)` advances. echo of the original
-user message is suppressed (at-most-one-match dedup via normalized anchor
-comparison).
+(user's original message is NOT echoed — it appeared in A's log as a user
+row and is suppressed as an echo of the routed input)
 
-**turn 2 ← B**: response extracted.
-
-**turn 3 → A** (routed):
+**turn 3 — A sees**:
 ```
---- user ---
-<delta user rows from B's JSONL, excluding B's assistant rows and echoed anchor>
-
 --- codex ---
-<B's full response>
+<B's response>
 ```
 
-**echo dedup**: when a routed payload appears in the target's JSONL as a user
-row, subsequent delta extraction for the other agent recognizes it as an echo.
-the `echoed_user_anchor` parameter marks the first matching user row for
-removal. only the first match is dropped; later identical rows are preserved.
+(B's routed payload is NOT echoed back to A)
 
-**alternation continues** until termination.
+Alternation continues until termination.
 
-#### C2. Collab with user interjections
+---
 
-**precondition**: collab is active. user types a message during agent A's turn.
+#### C2. Collab with user interjection
 
-**action**: message queued in `_collab_interjections`
+> User types a message while an agent is thinking during collab.
 
-**next routed payload → B**:
+**input pane**: (during A's turn) `important note`
+
+**next routed turn — B sees**:
 ```
 --- user ---
-<delta rows predating the turn>
-
---- user ---
-<interjection text>
+important note
 
 --- claude ---
 <A's response>
 ```
 
-Interjections are placed chronologically: after delta rows (which predate the
-turn) and before the peer response (which just completed). this reflects the
-actual timeline.
+Interjections appear before the peer response (chronological order: the user
+typed during the turn, the response completed after). interjections are
+replayed to the other agent on the following turn so both agents see them.
 
-**replay**: interjections from turn N are replayed in turn N+1 so the other
-agent also receives them. fresh interjections from turn N+1 are appended after
-replayed ones.
+---
 
 #### C3. Collab convergence
 
-**precondition**: agent A ends response with `[CONVERGED]`
+> Both agents signal `[CONVERGED]` on consecutive turns.
 
-**next turn**: A's response (with signal stripped) is routed to B. B responds.
+**behavior**: when A ends with `[CONVERGED]`, the signal is stripped and A's
+response is routed to B. if B also ends with `[CONVERGED]`, collab stops and
+returns to normal mode. if only one signals, the signal is void — both MUST
+re-signal in consecutive turns.
 
-- If B also ends with `[CONVERGED]`: collab stops. `sync_delivery_cursors()`
-  runs for both agents. stop reason = `converged`.
-- If B does not signal: prior `[CONVERGED]` is void. both agents must
-  re-signal in consecutive turns to converge.
+---
 
-#### C4. Collab turn limit reached
+#### C4. Collab turn limit
 
-**precondition**: `turns_completed == request.turns`
+> Collab reaches the configured maximum turns.
 
-**effect**: collab stops after the current response is received.
-`sync_delivery_cursors()` runs for both agents. stop reason = `turns_reached`.
+**behavior**: collab stops after the final response is received. the final
+response is NOT routed to the peer — it is absorbed on exit. both agents'
+delivery state is synchronized.
 
-**cursor effect**: both `D(A)` and `D(B)` advance to current peer read
-positions. the final unrouted response is not delivered as delta — it is
-absorbed by the sync.
+---
 
 ### Collab mode — agent-initiated
 
-#### C5. Agent A ends response with `[COLLAB]`
+#### C5. Agent signals `[COLLAB]`
 
-**precondition**: user sent message to A in normal mode. A's response ends with
-`[COLLAB]` on its own line.
+> User sends to A in normal mode. A's response ends with `[COLLAB]`.
 
-**detection**: idle `poll_for_response` detects the response. `[COLLAB]` signal
-is stripped from response text.
+**input pane**: `A ❯ design the auth flow`
 
-**turn 1 → B** (routed): A's response routed to B as a seed turn. the seed
-turn's `PendingSend.blocks` (including the user's original messages) are
-preserved from the watch.
+**A sees**: the user's message (normal delivery). A responds with `[COLLAB]`.
 
+**B sees** (turn 1, automatic): A's response with the signal stripped, plus any
+undelivered user context from A's log:
 ```
 --- user ---
-<delta user rows from A's JSONL>
+design the auth flow
 
 --- claude ---
-<A's response (signal stripped)>
+<A's response, signal stripped>
 ```
 
-**collab continues** from turn 2 onward as in C1.
+Collab continues from turn 2 as in C1.
+
+---
 
 ### Collab termination — halt
 
-#### C6. `/halt` after response received, before routing
+#### C6. `/halt` after one agent responds
 
-**precondition**: agent A responded. response captured but not yet routed to B.
-user types `/halt`.
+> A responds during collab. user types `/halt` before the response is routed
+> to B.
 
-**effect**: collab stops. `stop_reason = "user_halt"`.
+**input pane**: `/halt`
 
-**cursor sync**: `last_unrouted_response_agent = A`. selective sync: only
-`peer_agent(A)` is excluded from `sync_delivery_cursors()`. specifically:
-- `D(A)` is synced (A already received its content)
-- `D(B)` is NOT synced (A's response was never delivered to B)
+**behavior**: collab stops. A's response was received but never delivered to B.
 
-**post-halt behavior**: `_post_halt = True`. next user message in normal mode
-is prefixed with `(collab halted by user)\n\n`.
-
-**next message → B**: A's unrouted response appears as delta because `D(B)` was
-preserved:
+**next normal-mode message → B**: A's response appears as delta so B does not
+miss it:
 ```
 --- user ---
 <original collab message>
@@ -983,108 +1095,165 @@ preserved:
 <user's new message>
 ```
 
+**next normal-mode message → A**: no stale delta — A already received its own
+content.
+
+---
+
 #### C7. `/halt` before any response
 
-**precondition**: collab started, message sent to A, A has not responded.
-user types `/halt`.
+> User starts collab, then halts before the target agent responds.
 
-**effect**: `halt_event` is set. `wait_for_response` continues polling until A
-responds or times out. when it returns or raises:
-- if response received: same as C6 (selective sync)
-- if `KeyboardInterrupt`: `last_unrouted_response_agent` is None → full sync
-  for both agents. no response exists to preserve.
-- if `ClaodexError` (timeout): full sync. no response to preserve.
+**input pane**: `/collab do the thing` → `/halt`
 
-#### C8. `/halt` mid-collab (after multiple turns)
+**behavior**: the CLI waits for the current turn to complete or time out.
 
-**precondition**: collab completed N turns. agent A responds on turn N+1.
-`halt_event` was set during A's turn.
+- if the agent responds before the halt is processed: same as C6 — the
+  response is preserved for the peer.
+- if the wait is interrupted or times out: no response exists. both agents'
+  delivery state is synchronized. no content is lost because none was produced.
 
-**effect**: A's response is the last captured turn. not routed to B. selective
-sync: `D(B)` preserved, `D(A)` synced.
+---
 
-**invariant**: all routed turns were fully delivered to both agents via
-`send_routed_message`. only the final unrouted response is affected.
+#### C8. `/halt` mid-collab after multiple turns
+
+> Collab ran N turns successfully. agent A responds on turn N+1. user halts.
+
+**behavior**: all N routed turns were already delivered to both agents. only
+A's final (unrouted) response on turn N+1 is affected — it is preserved as
+delta for B on the next normal-mode message (same as C6).
+
+---
 
 ### Collab termination — error
 
-#### C9. Agent pane dies during collab
+#### C9. Agent pane dies
 
-**effect**: `wait_for_response` or `send_routed_message` raises `ClaodexError`.
-full `sync_delivery_cursors()` for both agents. error logged.
+> One agent's pane is killed during collab.
+
+**behavior**: collab aborts with an error. both agents' delivery state is
+synchronized. the dead agent is reported in the sidebar log.
+
+---
 
 #### C10. Turn timeout
 
-**effect**: `wait_for_response` exceeds `turn_timeout_seconds`. raises
-`ClaodexError` with `SMOKE SIGNAL` message. full sync. collab stops.
+> An agent fails to respond within the timeout (default: 18000s).
 
-#### C11. Interference detected
+**behavior**: collab aborts with an error identifying which agent timed out.
+both agents' delivery state is synchronized.
 
-**precondition**: during a Claude collab wait, a non-meta user row appears in
-Claude's JSONL that doesn't match the anchor (someone typed into Claude's pane
-directly).
+---
 
-**effect**: `ClaodexError("interference detected")`. full sync. collab aborts.
+#### C11. Interference
+
+> Someone types directly into an agent's terminal pane during a collab wait.
+
+**behavior**: collab aborts with an `interference detected` error. the
+unexpected input is reported.
+
+---
+
+### Post-collab normal mode
+
+#### PC1. Normal send after clean collab exit
+
+> Collab ended normally (convergence, turn limit). user sends to either agent.
+
+**behavior**: both agents' delivery state was synchronized at collab exit. the
+next message includes no stale collab delta — only new peer events (if any).
+
+---
+
+#### PC2. Normal send to the agent that missed the halt response
+
+> Collab was halted (C6/C8). user sends to the agent that didn't receive the
+> final response.
+
+**behavior**: the final collab response appears as delta alongside the user's
+new message. no content is lost. the `(collab halted by user)` prefix provides
+context.
+
+---
+
+#### PC3. Normal send to the agent that DID respond before halt
+
+> Collab was halted. user sends to the agent that produced the final response.
+
+**behavior**: no stale delta — that agent already has its own content. the
+user's message is delivered normally with any new peer events.
+
+---
 
 ### Edge cases
 
-#### E1. Delta contains previously-injected routed payload
+#### E1. Nested headers in delta
 
-**scenario**: user sends to A. payload includes a `--- codex ---` block as
-delta. A's JSONL records this as a user message. when later extracted as delta
-for B, the nested headers would be confusing.
+> User sends to A with B's exchange as delta. A's log records the full payload
+> (including `--- codex ---` headers) as a user message. when this is later
+> extracted as delta for B, headers MUST NOT nest.
 
-**handling**: `strip_injected_context()` detects the block structure and
-extracts only the final `--- user ---` block as the user event. nested headers
-are never forwarded.
+**behavior**: previously-injected header blocks are stripped. only the user's
+original message is extracted as the user event.
 
-#### E2. Collab with no peer delta to deliver
+---
 
-**scenario**: collab starts targeting A. B has no prior activity.
+#### E2. Duplicate user messages
 
-**payload → A**: just the user's message (via `send_user_message`). no delta
-block.
+> User sends the exact same message text twice to A. both are extracted as
+> delta for B.
 
-#### E3. Empty or meta-only user rows in JSONL
+**behavior**: both are delivered. echo suppression only removes the first
+match against a previously-routed payload echo. identical messages that are not
+echoes are preserved.
 
-**examples**: `<system-reminder>`, `<command-name>`, `<task-notification>`,
-continuation boilerplate.
+---
 
-**handling**: meta user rows are skipped during turn anchoring and interference
-detection (`_is_meta_user_text`). they are treated as staleness boundaries in
-stop-event fallback (`_latest_claude_stop_fallback_message_between`). they are
-NOT extracted as deliverable events.
+#### E3. Meta user rows
 
-#### E4. Duplicate user messages in delta
+> Agent runtime injects meta content (system reminders, command wrappers,
+> task notifications) as user rows.
 
-**scenario**: user sends the same message text twice to A. extracted as two
-delta events for B.
+**behavior**: meta rows are not extracted as deliverable events. they are
+invisible to the peer agent.
 
-**handling**: both are delivered. echo dedup only removes the first match
-against the `echoed_user_anchor` from a routed send. identical user messages
-that are not echoes are preserved.
+---
 
-#### E5. JSONL parse stall (malformed lines)
+#### E4. Malformed log lines
 
-**handling**: `refresh_source` tracks stuck cursor state. after 3 attempts or
-10 seconds, the malformed line is skipped (cursor advances by 1). a warning is
-emitted. the skipped content is lost but does not block subsequent delivery.
+> An agent's log contains unparseable lines.
 
-#### E6. Stop event fires before JSONL flush completes
+**behavior**: after repeated failures (3 attempts or 10 seconds), the
+malformed line is skipped with a warning. subsequent lines are processed
+normally.
 
-**scenario**: Claude debug log shows Stop event, but the final assistant text
-isn't in the JSONL yet.
+---
 
-**handling**: `_latest_claude_stop_fallback_message_between` returns `None`
-because no assistant text exists past the last user boundary. the stop-event
-latch (`_poll_stop_seen`) persists. next poll cycle re-checks and finds the
-flushed text.
+#### E5. Post-halt send to both agents
 
-#### E7. Post-collab normal-mode message to non-participating agent
+> User halts collab, then sends to the agent that missed content (B), then
+> sends to the other (A).
 
-**scenario**: user ran a collab, halted early, then sends a message to the
-agent that didn't receive the final response.
+**B sees**: collab content as delta (preserved from halt), plus user's message.
 
-**handling**: selective cursor sync (C6/C8) preserved that agent's delivery
-cursor. the collab content appears as delta in the normal-mode payload. no
-content is lost.
+**A sees** (after B responds): B's new exchange as delta, plus user's message.
+no collab content is re-delivered to A.
+
+---
+
+#### E6. Collab started with prior peer delta
+
+> User exchanged with B, then starts a collab targeting A. A has undelivered
+> B events.
+
+**A sees** (turn 1): B's delta prepended before the collab message:
+```
+--- user ---
+<prior message to B>
+
+--- codex ---
+<B's response>
+
+--- user ---
+<collab message>
+```
