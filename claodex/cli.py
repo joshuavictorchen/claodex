@@ -1243,12 +1243,19 @@ class ClaodexApplication:
                     source_agent=seed_response.agent,
                     response_text=seed_response.text,
                 )
+                self._log_event(bus, "sent", f"-> {next_target}", target=next_target)
                 pending_is_routed = True
                 last_active_target = next_target
                 self._mark_agent_thinking(bus, next_target, sent_at=pending.sent_at)
                 self._log_event(bus, "collab", f"routing -> {next_target}", target=next_target)
             else:
                 pending = router.send_user_message(request.start_agent, request.message)
+                self._log_event(
+                    bus,
+                    "sent",
+                    f"-> {pending.target_agent}",
+                    target=pending.target_agent,
+                )
                 pending_is_routed = False
                 last_active_target = pending.target_agent
                 self._mark_agent_thinking(bus, pending.target_agent, sent_at=pending.sent_at)
@@ -1336,6 +1343,7 @@ class ClaodexApplication:
                     user_interjections=interjections or None,
                     echoed_user_anchor=echoed_user_anchor,
                 )
+                self._log_event(bus, "sent", f"-> {next_target}", target=next_target)
                 pending_is_routed = True
                 last_active_target = next_target
                 self._mark_agent_thinking(bus, next_target, sent_at=pending.sent_at)

@@ -1,5 +1,25 @@
 # changelog
 
+## 2026-02-26 — fix sidebar think counter underreporting during collab
+
+**problem**: the sidebar `think` counter stayed low during long collab runs,
+typically showing only in-flight time for the currently active agent instead of
+accumulating completed collab turns.
+
+**root cause**: sidebar completed-thinking derivation pairs `sent(target)` events
+with `recv(agent)` events. `_run_collab()` emitted `recv` events but did not emit
+`sent` events for collab sends, so completed turn durations during collab were
+never counted.
+
+**solution**: `_run_collab()` now emits `sent` UI events for all collab send
+sites: seed-turn routed send, user-initiated collab start send, and each routed
+send in the main collab loop. added CLI tests that assert sent-event emission for
+non-seeded, seeded, and multi-turn routed collab paths.
+
+files changed: `claodex/cli.py`, `tests/test_cli.py`
+
+verified: `PYTHONPATH=. pytest -q tests/test_cli.py` → 49 passed
+
 ## 2026-02-26 — fix stop-event fallback boundaries for all user row types
 
 **problem**: the stop-event fallback in `_latest_claude_stop_fallback_message_between`

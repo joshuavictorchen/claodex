@@ -841,6 +841,16 @@ def test_run_collab_logs_recv_event_for_completed_turn(tmp_path):
             "meta": None,
         }
     ]
+    sent_events = [event for event in bus.events if event["kind"] == "sent"]
+    assert sent_events == [
+        {
+            "kind": "sent",
+            "message": "-> claude",
+            "agent": None,
+            "target": "claude",
+            "meta": None,
+        }
+    ]
 
 
 def test_run_collab_logs_recv_event_for_seed_turn(tmp_path):
@@ -883,6 +893,58 @@ def test_run_collab_logs_recv_event_for_seed_turn(tmp_path):
             "target": None,
             "meta": None,
         }
+    ]
+    sent_events = [event for event in bus.events if event["kind"] == "sent"]
+    assert sent_events == [
+        {
+            "kind": "sent",
+            "message": "-> claude",
+            "agent": None,
+            "target": "claude",
+            "meta": None,
+        }
+    ]
+
+
+def test_run_collab_logs_sent_events_for_routed_turns(tmp_path):
+    """Each routed collab send emits sent(target) for think-time pairing."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    application = ClaodexApplication()
+    router = _RouterStub()
+    request = CollabRequest(turns=3, start_agent="claude", message="do the task")
+    bus = _BusRecorder()
+
+    def fake_halt_listener(*_args, **_kwargs):  # noqa: ANN001
+        return
+
+    application._halt_listener = fake_halt_listener  # type: ignore[method-assign]
+    application._run_collab(workspace_root=workspace, router=router, request=request, bus=bus)
+
+    sent_events = [event for event in bus.events if event["kind"] == "sent"]
+    assert sent_events == [
+        {
+            "kind": "sent",
+            "message": "-> claude",
+            "agent": None,
+            "target": "claude",
+            "meta": None,
+        },
+        {
+            "kind": "sent",
+            "message": "-> codex",
+            "agent": None,
+            "target": "codex",
+            "meta": None,
+        },
+        {
+            "kind": "sent",
+            "message": "-> claude",
+            "agent": None,
+            "target": "claude",
+            "meta": None,
+        },
     ]
 
 
