@@ -381,6 +381,142 @@ def test_send_user_message_includes_peer_delta_and_advances_delivery_cursor(tmp_
     assert read_delivery_cursor(workspace, "codex") == read_read_cursor(workspace, "claude")
 
 
+def test_send_user_message_to_peer_does_not_redeliver_stacked_user_rows(tmp_path):
+    """After initial delivery, repeated user rows are not re-sent as stale delta."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    _write_jsonl(
+        claude_session,
+        [
+            {
+                "timestamp": "2026-02-22T10:00:00Z",
+                "type": "user",
+                "sessionId": "claude-session",
+                "message": {"role": "user", "content": "first"},
+            },
+            {
+                "timestamp": "2026-02-22T10:00:01Z",
+                "type": "user",
+                "sessionId": "claude-session",
+                "message": {"role": "user", "content": "second"},
+            },
+            {
+                "timestamp": "2026-02-22T10:00:02Z",
+                "type": "assistant",
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "A response"}],
+                },
+            },
+        ],
+    )
+    _write_jsonl(codex_session, _codex_entries("handoff", "B response"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "codex", 2)
+    write_delivery_cursor(workspace, "claude", 0)
+
+    sent_messages: list[str] = []
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: sent_messages.append(content),
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.05, turn_timeout_seconds=5),
+    )
+
+    router.send_user_message("codex", "follow-up")
+
+    assert len(sent_messages) == 1
+    payload = sent_messages[0]
+    assert "--- claude ---\nA response" in payload
+    assert "--- user ---\nfirst" not in payload
+    assert "--- user ---\nsecond" not in payload
+    assert payload.endswith("--- user ---\nfollow-up")
+
+
+def test_send_user_message_to_peer_after_halt_responder_first_keeps_full_context(tmp_path):
+    """Peer receives unrouted final response plus responder-first post-halt exchange."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    _write_jsonl(
+        claude_session,
+        [
+            {
+                "timestamp": "2026-02-22T10:00:00Z",
+                "type": "assistant",
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "A final collab response"}],
+                },
+            },
+            {
+                "timestamp": "2026-02-22T10:00:01Z",
+                "type": "user",
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "user",
+                    "content": "(collab halted by user)\n\nfirst post-halt message",
+                },
+            },
+            {
+                "timestamp": "2026-02-22T10:00:02Z",
+                "type": "assistant",
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "A reply to first post-halt message"}],
+                },
+            },
+        ],
+    )
+    _write_jsonl(codex_session, _codex_entries("seed", "seed"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 0)
+
+    sent_messages: list[str] = []
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: sent_messages.append(content),
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.05, turn_timeout_seconds=5),
+    )
+
+    router.send_user_message("codex", "direct to peer")
+
+    assert len(sent_messages) == 1
+    payload = sent_messages[0]
+    expected_fragments = [
+        "--- claude ---\nA final collab response",
+        "--- user ---\n(collab halted by user)\n\nfirst post-halt message",
+        "--- claude ---\nA reply to first post-halt message",
+        "--- user ---\ndirect to peer",
+    ]
+    start = 0
+    for fragment in expected_fragments:
+        index = payload.find(fragment, start)
+        assert index >= 0
+        start = index + len(fragment)
+
+
 def test_send_user_message_stamps_sent_at_before_paste(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

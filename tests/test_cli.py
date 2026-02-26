@@ -790,6 +790,96 @@ class _ReplRouterStub:
         return None
 
 
+def test_idle_callback_collab_seed_preserves_signal(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    application = ClaodexApplication()
+    pending = PendingSend(
+        target_agent="claude",
+        before_cursor=0,
+        sent_text="review this",
+        sent_at=datetime.now(timezone.utc),
+    )
+    application._pending_watches["claude"] = pending
+
+    class _PollRouter:
+        def __init__(self, root: Path) -> None:
+            self.workspace_root = root
+            self.config = type("Config", (), {"turn_timeout_seconds": 18000})()
+            self._returned = False
+
+        def poll_for_response(self, _pending: PendingSend) -> ResponseTurn | None:
+            if self._returned:
+                return None
+            self._returned = True
+            return ResponseTurn(
+                agent="claude",
+                text="looks good\n\n[COLLAB]",
+                source_cursor=1,
+                received_at=datetime.now(timezone.utc),
+            )
+
+        def clear_poll_latch(self, _agent: str, _before_cursor: int) -> None:
+            return
+
+    router = _PollRouter(workspace)
+
+    with patch.object(application, "_check_for_reregistration"):
+        callback = application._make_idle_callback(router)  # type: ignore[arg-type]
+        event = callback()
+
+    assert event is not None
+    assert event.kind == "collab_initiated"
+    assert application._collab_seed is not None
+    seed_pending, seed_response = application._collab_seed
+    assert seed_pending.target_agent == "claude"
+    # [COLLAB] should remain in routed seed text
+    assert seed_response.text == "looks good\n\n[COLLAB]"
+    assert application._pending_watches == {}
+
+
+def test_idle_callback_ignores_signal_only_collab_response(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    application = ClaodexApplication()
+    pending = PendingSend(
+        target_agent="claude",
+        before_cursor=0,
+        sent_text="review this",
+        sent_at=datetime.now(timezone.utc),
+    )
+    application._pending_watches["claude"] = pending
+
+    class _PollRouter:
+        def __init__(self, root: Path) -> None:
+            self.workspace_root = root
+            self.config = type("Config", (), {"turn_timeout_seconds": 18000})()
+
+        def poll_for_response(self, _pending: PendingSend) -> ResponseTurn | None:
+            return ResponseTurn(
+                agent="claude",
+                text="[COLLAB]",
+                source_cursor=1,
+                received_at=datetime.now(timezone.utc),
+            )
+
+        def clear_poll_latch(self, _agent: str, _before_cursor: int) -> None:
+            return
+
+    router = _PollRouter(workspace)
+
+    with patch.object(application, "_check_for_reregistration"):
+        callback = application._make_idle_callback(router)  # type: ignore[arg-type]
+        event = callback()
+
+    assert event is None
+    assert application._collab_seed is None
+    # agent responded, so the watch is consumed even when collab signal is empty
+    assert application._pending_watches == {}
+
+
 def test_run_collab_halt_drops_remaining_interjections(tmp_path):
     """Queued interjections are discarded on halt and never auto-sent."""
     workspace = tmp_path / "workspace"
@@ -915,6 +1005,37 @@ def test_run_collab_logs_recv_event_for_seed_turn(tmp_path):
     ]
 
 
+def test_run_collab_seed_turn_routes_collab_signal(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    application = ClaodexApplication()
+    router = _RouterStub()
+    request = CollabRequest(turns=1, start_agent="claude", message="do the task")
+    seed_turn = (
+        PendingSend(
+            target_agent="codex",
+            before_cursor=0,
+            sent_text="seed",
+            sent_at=datetime.now(timezone.utc),
+        ),
+        ResponseTurn(agent="codex", text="seed reply\n\n[COLLAB]", source_cursor=1),
+    )
+
+    def fake_halt_listener(*_args, **_kwargs):  # noqa: ANN001
+        return
+
+    application._halt_listener = fake_halt_listener  # type: ignore[method-assign]
+    application._run_collab(
+        workspace_root=workspace,
+        router=router,
+        request=request,
+        seed_turn=seed_turn,
+    )
+
+    assert router.send_routed_calls[0][2] == "seed reply\n\n[COLLAB]"
+
+
 def test_run_collab_logs_sent_events_for_routed_turns(tmp_path):
     """Each routed collab send emits sent(target) for think-time pairing."""
     workspace = tmp_path / "workspace"
@@ -972,7 +1093,45 @@ def test_run_collab_syncs_delivery_cursors_on_clean_exit(tmp_path):
     application._run_collab(workspace_root=workspace, router=router, request=request)
 
     assert router.sync_calls == 1
-    assert router.sync_target_calls == [None]
+    # turn-limit exit leaves the final claude response unrouted, so preserve it
+    # for codex by skipping codex cursor sync
+    assert router.sync_target_calls == [("claude",)]
+
+
+def test_run_collab_converged_exit_preserves_final_response_for_peer(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    application = ClaodexApplication()
+    request = CollabRequest(turns=4, start_agent="claude", message="do the task")
+
+    class _ConvergedRouter(_RouterStub):
+        def __init__(self) -> None:
+            super().__init__()
+            self._wait_calls = 0
+
+        def wait_for_response(self, pending: PendingSend) -> ResponseTurn:
+            self._wait_calls += 1
+            return ResponseTurn(
+                agent=pending.target_agent,
+                text=f"reply {self._wait_calls}\n\n[CONVERGED]",
+                source_cursor=self._wait_calls,
+            )
+
+    router = _ConvergedRouter()
+
+    def fake_halt_listener(*_args, **_kwargs):  # noqa: ANN001
+        return
+
+    application._halt_listener = fake_halt_listener  # type: ignore[method-assign]
+    application._run_collab(workspace_root=workspace, router=router, request=request)
+
+    assert len(router.send_routed_calls) == 1
+    # routed converged response keeps the signal
+    assert router.send_routed_calls[0][2].endswith("[CONVERGED]")
+    # codex produced the final unrouted converged response, so preserve it for
+    # claude by skipping claude cursor sync
+    assert router.sync_target_calls == [("codex",)]
 
 
 def test_run_collab_syncs_delivery_cursors_when_wait_raises(tmp_path):
@@ -997,6 +1156,38 @@ def test_run_collab_syncs_delivery_cursors_when_wait_raises(tmp_path):
 
     assert router.sync_calls == 1
     assert router.sync_target_calls == [None]
+
+
+def test_run_collab_route_error_preserves_unrouted_response_for_peer(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    application = ClaodexApplication()
+    request = CollabRequest(turns=3, start_agent="claude", message="do the task")
+
+    class _RouteFailRouter(_RouterStub):
+        def send_routed_message(
+            self,
+            target_agent: str,
+            source_agent: str,
+            response_text: str,
+            user_interjections: list[str] | None = None,
+            echoed_user_anchor: str | None = None,
+        ) -> PendingSend:
+            del target_agent, source_agent, response_text, user_interjections, echoed_user_anchor
+            raise ClaodexError("route failed")
+
+    router = _RouteFailRouter()
+
+    def fake_halt_listener(*_args, **_kwargs):  # noqa: ANN001
+        return
+
+    application._halt_listener = fake_halt_listener  # type: ignore[method-assign]
+    application._run_collab(workspace_root=workspace, router=router, request=request)
+
+    # claude produced a completed response that failed to route to codex;
+    # preserve it by skipping codex cursor sync
+    assert router.sync_target_calls == [("claude",)]
 
 
 def test_run_collab_passes_echo_anchor_after_routed_turns(tmp_path):
@@ -1062,6 +1253,43 @@ def test_run_collab_replays_interjection_to_both_agents(tmp_path):
     content = exchange_files[0].read_text(encoding="utf-8")
     # interjection is logged once even though it is replayed on the wire
     assert content.count("please add tests") == 1
+
+
+def test_run_collab_replays_multiple_interjections_in_order(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    application = ClaodexApplication()
+    request = CollabRequest(turns=3, start_agent="claude", message="do the task")
+
+    class _ReplayRouterStub(_RouterStub):
+        def __init__(self, app: ClaodexApplication) -> None:
+            super().__init__()
+            self._app = app
+            self._wait_calls = 0
+
+        def wait_for_response(self, pending: PendingSend) -> ResponseTurn:
+            self._wait_calls += 1
+            if self._wait_calls == 1:
+                self._app._collab_interjections.put("first note")
+                self._app._collab_interjections.put("second note")
+            return ResponseTurn(
+                agent=pending.target_agent,
+                text=f"reply {self._wait_calls}",
+                source_cursor=self._wait_calls,
+            )
+
+    router = _ReplayRouterStub(application)
+
+    def fake_halt_listener(*_args, **_kwargs):  # noqa: ANN001
+        return
+
+    application._halt_listener = fake_halt_listener  # type: ignore[method-assign]
+    application._run_collab(workspace_root=workspace, router=router, request=request)
+
+    assert len(router.send_routed_calls) == 2
+    assert router.send_routed_calls[0][3] == ["first note", "second note"]
+    assert router.send_routed_calls[1][3] == ["first note", "second note"]
 
 
 def test_run_repl_prepends_post_halt_annotation_once(tmp_path):

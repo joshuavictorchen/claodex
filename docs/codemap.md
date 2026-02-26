@@ -117,7 +117,7 @@ User types in CLI REPL
   → CLI stores a per-target pending watch for idle `[COLLAB]` detection
   → Agent processes message, writes response to its JSONL
   → input_editor idle tick triggers router.py:poll_for_response()
-  → if response ends with `[COLLAB]`, CLI seeds _run_collab() and routes to peer
+  → if response ends with `[COLLAB]`, CLI seeds _run_collab() with the full response (signal preserved) and routes to peer
   → collab loop uses router.py:wait_for_response() for blocking turn waits
   → collab sends emit `sent` events and received turns emit `recv` events for sidebar think-time pairing
   → after routed turns, collab forwards the previous routed payload as an echo anchor so router.py:send_routed_message() can drop the source-agent user-row echo and avoid repeated context
@@ -147,7 +147,7 @@ State on disk:
 | Reattach | `cli.py:_run_attach` | Resolves layout, validates agent panes, relaunches sidebar if not running, resumes REPL |
 | Normal message sending | `cli.py:_run_repl`, `router.py:send_user_message` | Fire-and-forget send; registers/updates one pending watch per target (superseding prior watch) |
 | Agent-initiated collab detection | `cli.py:_make_idle_callback`, `router.py:poll_for_response` | Idle poll checks pending watches for `[COLLAB]`, seeds `_run_collab` on trigger |
-| Collab mode | `cli.py:_run_collab` | Automated multi-turn; uses `Router.send_routed_message` + `wait_for_response`, emits `sent/recv` UI events for sidebar think accounting, passes a routed-echo anchor after routed turns to prevent repeated user context, and does selective delivery-cursor sync on `user_halt` to avoid dropping an unrouted final response |
+| Collab mode | `cli.py:_run_collab` | Automated multi-turn; uses `Router.send_routed_message` + `wait_for_response`, emits `sent/recv` UI events for sidebar think accounting, passes a routed-echo anchor after routed turns to prevent repeated user context, and does selective delivery-cursor sync on any exit that leaves a completed response unrouted so the peer receives it on the next normal turn |
 | Response detection | `router.py:_scan_*_turn_end_marker`, `_scan_claude_debug_stop_event`, `_detect_interference` | Claude: `turn_duration` → debug-log Stop event → timeout; Codex: `task_complete` after `task_started`. Interference detection aborts on unexpected user input. |
 | JSONL extraction | `extract.py:_extract_claude_room_events`, `_extract_codex_room_events` | Agent-specific parsers |
 | Header stripping | `router.py:strip_injected_context` | Removes nested `--- source ---` blocks from forwarded user messages |

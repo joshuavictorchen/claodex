@@ -1,5 +1,33 @@
 # changelog
 
+## 2026-02-26 — fix dropped final responses and preserve collab signals in routing
+
+**problem**: after some collab exits, peer agents were missing the other
+agent's final response in the next relay ("missing Claude messages"). the drop
+occurred on converged, turn-limit, and some error exits. additionally, seeded
+agent-initiated collab stripped `[COLLAB]` from routed text, conflicting with
+the message-routing contract.
+
+**root cause**:
+- `_run_collab()` only preserved completed-but-unrouted responses on
+  `user_halt`; other exits still synced both delivery cursors and marked the
+  final response as delivered before peer routing.
+- idle `[COLLAB]` detection created seed turns from a signal-stripped response
+  (`_strip_trailing_signal`), so routed payloads lost the signal line.
+
+**solution**:
+- generalized selective cursor sync in `_run_collab()`: if a completed
+  response exists and was not routed, skip sync for that peer target on any
+  exit path so it is delivered on the next normal turn.
+- keep `[COLLAB]` in seeded collab response text; only use stripped text to
+  reject empty signal-only responses.
+- added/updated tests for turn-limit, converged, and route-error preservation,
+  seed-signal preservation, and multi-interjection replay ordering.
+
+files changed: `claodex/cli.py`, `tests/test_cli.py`, `docs/codemap.md`
+
+verified: `PYTHONPATH=. pytest -q` → 217 passed
+
 ## 2026-02-26 — collab routing reliability fixes
 
 this batch fixes ten bugs in the message routing and collaboration subsystems.

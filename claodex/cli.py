@@ -924,8 +924,10 @@ class ClaodexApplication:
                 )
 
                 if _last_line_is(response.text, COLLAB_SIGNAL):
-                    clean_text = _strip_trailing_signal(response.text, COLLAB_SIGNAL)
-                    if not clean_text.strip():
+                    # keep the signal in routed text; only use stripped text
+                    # to detect empty signal-only responses
+                    stripped_text = _strip_trailing_signal(response.text, COLLAB_SIGNAL)
+                    if not stripped_text.strip():
                         self._log_event(
                             bus,
                             "watch",
@@ -933,14 +935,14 @@ class ClaodexApplication:
                             agent=agent,
                         )
                         return None
-                    clean_response = ResponseTurn(
+                    seeded_response = ResponseTurn(
                         agent=response.agent,
-                        text=clean_text,
+                        text=response.text,
                         source_cursor=response.source_cursor,
                         received_at=response.received_at,
                     )
                     # stash the seed turn for the REPL to pick up
-                    self._collab_seed = (pending, clean_response)
+                    self._collab_seed = (pending, seeded_response)
                     return InputEvent(kind="collab_initiated")
 
                 return None
@@ -1386,7 +1388,9 @@ class ClaodexApplication:
             listener.join(timeout=0.5)
             try:
                 sync_targets: list[str] | None = None
-                if stop_reason == "user_halt" and last_unrouted_response_agent is not None:
+                if last_unrouted_response_agent is not None:
+                    # a completed response was received but not routed onward;
+                    # preserve it for the peer's next normal-mode delivery
                     unsynced_target = peer_agent(last_unrouted_response_agent)
                     sync_targets = [agent for agent in AGENTS if agent != unsynced_target]
                 router.sync_delivery_cursors(sync_targets)
