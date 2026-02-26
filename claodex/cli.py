@@ -1177,6 +1177,8 @@ class ClaodexApplication:
         last_active_target = request.start_agent
 
         turn_records: list[tuple[PendingSend, ResponseTurn]] = []
+        # tracks a response that was received but not yet routed onward
+        last_unrouted_response_agent: str | None = None
         # prevent stale interjections from a previous collab from leaking
         # into this run
         _drain_queue(self._collab_interjections)
@@ -1313,6 +1315,7 @@ class ClaodexApplication:
                     response.received_at,
                     first_message=exchange_first_message,
                 )
+                last_unrouted_response_agent = response.agent
 
                 # convergence: both agents signaled in consecutive turns
                 if (
@@ -1347,6 +1350,7 @@ class ClaodexApplication:
                     user_interjections=routed_interjections or None,
                     echoed_user_anchor=echoed_user_anchor,
                 )
+                last_unrouted_response_agent = None
                 self._log_event(bus, "sent", f"-> {next_target}", target=next_target)
                 pending_is_routed = True
                 pending_replay_interjections = fresh_interjections
@@ -1381,7 +1385,11 @@ class ClaodexApplication:
             stop_listener.set()
             listener.join(timeout=0.5)
             try:
-                router.sync_delivery_cursors()
+                sync_targets: list[str] | None = None
+                if stop_reason == "user_halt" and last_unrouted_response_agent is not None:
+                    unsynced_target = peer_agent(last_unrouted_response_agent)
+                    sync_targets = [agent for agent in AGENTS if agent != unsynced_target]
+                router.sync_delivery_cursors(sync_targets)
             except ClaodexError as exc:
                 self._log_event(bus, "error", f"delivery cursor sync failed: {exc}")
             self._close_exchange_log(exchange_handle, turns_completed, stop_reason)

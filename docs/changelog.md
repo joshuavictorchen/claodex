@@ -1,5 +1,30 @@
 # changelog
 
+## 2026-02-26 — fix dropped unrouted responses on immediate `/halt`
+
+**problem**: when a collab was halted immediately after one agent replied, the
+response could disappear from subsequent peer context. users observed this as
+"dropped" messages after `/halt` + follow-up turns.
+
+**root cause**: `_run_collab()` always called `Router.sync_delivery_cursors()`
+for both targets in `finally`. on `user_halt`, if a response had been received
+but not yet routed onward, syncing both delivery cursors marked that response as
+already delivered to the peer even though no routed send occurred.
+
+**solution**:
+- `Router.sync_delivery_cursors()` now accepts an optional target subset and
+  validates agent names.
+- `_run_collab()` tracks whether the latest response was received but still
+  unrouted. on `user_halt`, it syncs only the opposite target so the unrouted
+  peer cursor is preserved for next normal-mode delta delivery.
+- tests were updated/added for selective sync behavior and invalid-target
+  validation.
+
+files changed: `claodex/cli.py`, `claodex/router.py`, `tests/test_cli.py`,
+`tests/test_router.py`, `docs/codemap.md`
+
+verified: `PYTHONPATH=. pytest -q` → 211 passed
+
 ## 2026-02-26 — fix sidebar think counter underreporting during collab
 
 **problem**: the sidebar `think` counter stayed low during long collab runs,

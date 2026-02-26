@@ -270,15 +270,34 @@ class Router:
         )
         return events, peer_read_cursor
 
-    def sync_delivery_cursors(self) -> None:
-        """Align both delivery cursors with current peer read positions.
+    def sync_delivery_cursors(
+        self,
+        target_agents: list[str] | tuple[str, ...] | None = None,
+    ) -> None:
+        """Align delivery cursors with current peer read positions.
 
         This is used when collaboration terminates after receiving a final
         response but before routing it onward. Advancing delivery cursors at
         shutdown avoids stale collab rows leaking into the next normal-mode
         user send as undelivered delta.
+
+        Args:
+            target_agents: Optional subset of target agents to sync. Defaults
+                to both agents.
         """
-        for target_agent in AGENTS:
+        targets: tuple[str, ...]
+        if target_agents is None:
+            targets = AGENTS
+        else:
+            targets = tuple(dict.fromkeys(target_agents))
+            invalid = [agent for agent in targets if agent not in AGENTS]
+            if invalid:
+                invalid_text = ", ".join(sorted(set(invalid)))
+                raise ClaodexError(
+                    f"validation error: unsupported target agent(s): {invalid_text}"
+                )
+
+        for target_agent in targets:
             peer = peer_agent(target_agent)
             peer_read_cursor = self.refresh_source(peer)
             write_delivery_cursor(self.workspace_root, target_agent, peer_read_cursor)

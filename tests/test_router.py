@@ -669,6 +669,59 @@ def test_sync_delivery_cursors_aligns_to_peer_read_positions(tmp_path):
     assert read_delivery_cursor(workspace, "codex") == 2
 
 
+def test_sync_delivery_cursors_can_limit_targets(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    _write_jsonl(claude_session, _claude_entries("task", "done"))
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 0)
+    write_delivery_cursor(workspace, "codex", 0)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=5),
+    )
+
+    router.sync_delivery_cursors(["codex"])
+
+    assert read_delivery_cursor(workspace, "claude") == 0
+    assert read_delivery_cursor(workspace, "codex") == 2
+
+
+def test_sync_delivery_cursors_rejects_invalid_target(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    _write_jsonl(claude_session, _claude_entries("task", "done"))
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=5),
+    )
+
+    with pytest.raises(ClaodexError, match="unsupported target agent"):
+        router.sync_delivery_cursors(["invalid"])
+
+
 def test_refresh_source_skips_stuck_malformed_tail_after_retries(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

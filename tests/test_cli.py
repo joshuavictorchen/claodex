@@ -719,6 +719,7 @@ class _RouterStub:
         self.send_user_calls: list[tuple[str, str]] = []
         self.send_routed_calls: list[tuple[str, str, str, list[str] | None, str | None]] = []
         self.sync_calls = 0
+        self.sync_target_calls: list[tuple[str, ...] | None] = []
 
     def send_user_message(self, target_agent: str, user_text: str) -> PendingSend:
         self.send_user_calls.append((target_agent, user_text))
@@ -750,8 +751,15 @@ class _RouterStub:
             sent_at=datetime.now(timezone.utc),
         )
 
-    def sync_delivery_cursors(self) -> None:
+    def sync_delivery_cursors(
+        self,
+        target_agents: list[str] | tuple[str, ...] | None = None,
+    ) -> None:
         self.sync_calls += 1
+        if target_agents is None:
+            self.sync_target_calls.append(None)
+        else:
+            self.sync_target_calls.append(tuple(target_agents))
 
 
 class _ReplRouterStub:
@@ -811,6 +819,7 @@ def test_run_collab_halt_drops_remaining_interjections(tmp_path):
     assert router.send_user_calls == [("claude", "do the task")]
     assert captured_editor is application._editor
     assert router.send_routed_calls == []
+    assert router.sync_target_calls == [("claude",)]
     assert _drain_queue(application._collab_interjections) == []
     assert application._post_halt is True
 
@@ -963,6 +972,7 @@ def test_run_collab_syncs_delivery_cursors_on_clean_exit(tmp_path):
     application._run_collab(workspace_root=workspace, router=router, request=request)
 
     assert router.sync_calls == 1
+    assert router.sync_target_calls == [None]
 
 
 def test_run_collab_syncs_delivery_cursors_when_wait_raises(tmp_path):
@@ -986,6 +996,7 @@ def test_run_collab_syncs_delivery_cursors_when_wait_raises(tmp_path):
     application._run_collab(workspace_root=workspace, router=router, request=request)
 
     assert router.sync_calls == 1
+    assert router.sync_target_calls == [None]
 
 
 def test_run_collab_passes_echo_anchor_after_routed_turns(tmp_path):
@@ -1198,7 +1209,11 @@ def test_run_collab_interjection_logging_ignores_routed_delta_blocks(tmp_path):
                 sent_at=datetime(2026, 2, 24, 1, 1, 30, tzinfo=timezone.utc),
             )
 
-        def sync_delivery_cursors(self) -> None:
+        def sync_delivery_cursors(
+            self,
+            target_agents: list[str] | tuple[str, ...] | None = None,
+        ) -> None:
+            del target_agents
             return
 
     router = _InterjectionRouterStub(application)
