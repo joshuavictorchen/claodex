@@ -376,19 +376,21 @@ class Router:
         # include undelivered user rows from the source log, but skip source
         # assistant rows because response_text already forwards that response
         blocks: list[tuple[str, str]] = []
+        echo_dropped = False
         for event in delta_events:
             sender = event["from"]
             body = event["body"]
             if sender == source_agent:
                 continue
             if (
-                sender == "user"
+                not echo_dropped
+                and sender == "user"
                 and normalized_echoed_user_anchor is not None
                 and _normalize_for_anchor(body) == normalized_echoed_user_anchor
             ):
-                # drop the source-agent echo of the previously routed payload;
-                # drops all matching rows, safe because at most one echoed
-                # user row appears per routed delta window
+                # drop only the first echo of the previously routed payload;
+                # later identical user rows are legitimate repeated messages
+                echo_dropped = True
                 continue
             blocks.append((sender, body))
         blocks.append((source_agent, response_text))

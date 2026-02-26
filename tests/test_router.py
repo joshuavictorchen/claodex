@@ -554,6 +554,83 @@ first response"""
     assert "--- user ---\noriginal request" not in sent_messages[0]
 
 
+def test_send_routed_message_dedupes_only_first_echoed_user_row(tmp_path):
+    """When two identical user rows exist in delta, only the first is dropped."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    routed_payload = "--- user ---\nrepeat me"
+
+    # claude log: normal ack
+    _write_jsonl(claude_session, _claude_entries("ack", "ack"))
+
+    # codex log: the echoed user row appears twice — first is the echo of
+    # routed input, second is a genuine repeated user message
+    codex_entries = [
+        {
+            "timestamp": "2026-02-22T10:00:00Z",
+            "type": "session_meta",
+            "payload": {"id": "codex-session", "cwd": "ignored"},
+        },
+        {
+            "timestamp": "2026-02-22T10:00:01Z",
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "repeat me"},
+        },
+        {
+            "timestamp": "2026-02-22T10:00:02Z",
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "repeat me"},
+        },
+        {
+            "timestamp": "2026-02-22T10:00:03Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "codex reply"}],
+            },
+        },
+    ]
+    _write_jsonl(codex_session, codex_entries)
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 2)
+    write_read_cursor(workspace, "codex", 4)
+    # delivery cursor before the two user rows
+    write_delivery_cursor(workspace, "claude", 1)
+    write_delivery_cursor(workspace, "codex", 2)
+
+    sent_messages: list[str] = []
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: sent_messages.append(content),
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=5),
+    )
+
+    router.send_routed_message(
+        target_agent="claude",
+        source_agent="codex",
+        response_text="codex reply",
+        echoed_user_anchor=routed_payload,
+    )
+
+    assert len(sent_messages) == 1
+    payload = sent_messages[0]
+    # the second (genuine) user row must survive
+    assert "--- user ---\nrepeat me" in payload
+    # the codex response must be present
+    assert "--- codex ---\ncodex reply" in payload
+    # only one user block should exist (the first echo was dropped)
+    assert payload.count("--- user ---") == 1
+
+
 def test_sync_delivery_cursors_aligns_to_peer_read_positions(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
