@@ -421,7 +421,7 @@ def test_send_user_message_stamps_sent_at_before_paste(tmp_path):
     assert pasted_payload == "--- user ---\nhello"
 
 
-def test_send_routed_message_appends_user_interjections(tmp_path):
+def test_send_routed_message_prepends_user_interjections(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     ensure_state_layout(workspace)
@@ -455,11 +455,14 @@ def test_send_routed_message_appends_user_interjections(tmp_path):
     )
 
     assert len(sent_messages) == 1
-    assert sent_messages[0].startswith("--- user ---\ntask")
-    assert "--- claude ---\npeer response" in sent_messages[0]
+    assert sent_messages[0].startswith("--- user ---\nquestion one")
     assert sent_messages[0].count("--- user ---") == 3
+    assert sent_messages[0].index("--- user ---\nquestion one") < sent_messages[0].index("--- user ---\ntask")
+    assert sent_messages[0].index("--- user ---\nquestion two") < sent_messages[0].index("--- user ---\ntask")
+    assert "--- user ---\ntask" in sent_messages[0]
+    assert "--- claude ---\npeer response" in sent_messages[0]
     assert "--- user ---\nquestion one" in sent_messages[0]
-    assert sent_messages[0].endswith("--- user ---\nquestion two")
+    assert sent_messages[0].endswith("--- claude ---\npeer response")
     assert "--- claude ---\ndone" not in sent_messages[0]
     assert read_delivery_cursor(workspace, "codex") == read_read_cursor(workspace, "claude")
 

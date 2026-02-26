@@ -1173,6 +1173,7 @@ class ClaodexApplication:
         turns_completed = 0
         pending: PendingSend | None = None
         pending_is_routed = False
+        pending_replay_interjections: list[str] = []
         last_active_target = request.start_agent
 
         turn_records: list[tuple[PendingSend, ResponseTurn]] = []
@@ -1330,9 +1331,12 @@ class ClaodexApplication:
                     stop_reason = "turns_reached"
                     break
 
-                # include any user interjections typed during this turn
+                # include fresh user interjections from this turn and replay
+                # prior-turn interjections so both agents eventually receive
+                # them
                 queued_interjections = _drain_queue(self._collab_interjections)
-                interjections = [text.strip() for text in queued_interjections if text.strip()]
+                fresh_interjections = [text.strip() for text in queued_interjections if text.strip()]
+                routed_interjections = [*pending_replay_interjections, *fresh_interjections]
 
                 next_target = peer_agent(response.agent)
                 echoed_user_anchor = pending.sent_text if pending_is_routed else None
@@ -1340,15 +1344,16 @@ class ClaodexApplication:
                     target_agent=next_target,
                     source_agent=response.agent,
                     response_text=response.text,
-                    user_interjections=interjections or None,
+                    user_interjections=routed_interjections or None,
                     echoed_user_anchor=echoed_user_anchor,
                 )
                 self._log_event(bus, "sent", f"-> {next_target}", target=next_target)
                 pending_is_routed = True
+                pending_replay_interjections = fresh_interjections
                 last_active_target = next_target
                 self._mark_agent_thinking(bus, next_target, sent_at=pending.sent_at)
-                if interjections:
-                    for body in interjections:
+                if fresh_interjections:
+                    for body in fresh_interjections:
                         exchange_first_message = self._append_exchange_message(
                             exchange_handle,
                             "user",
@@ -1359,7 +1364,7 @@ class ClaodexApplication:
                     self._log_event(
                         bus,
                         "collab",
-                        f"routing -> {next_target} (with {len(interjections)} user interjection(s))",
+                        f"routing -> {next_target} (with {len(fresh_interjections)} user interjection(s))",
                         target=next_target,
                     )
                 else:

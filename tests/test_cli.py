@@ -1007,6 +1007,52 @@ def test_run_collab_passes_echo_anchor_after_routed_turns(tmp_path):
     assert router.send_routed_calls[1][4] == "reply"
 
 
+def test_run_collab_replays_interjection_to_both_agents(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    application = ClaodexApplication()
+    request = CollabRequest(turns=3, start_agent="claude", message="do the task")
+
+    class _ReplayRouterStub(_RouterStub):
+        def __init__(self, app: ClaodexApplication) -> None:
+            super().__init__()
+            self._app = app
+            self._wait_calls = 0
+
+        def wait_for_response(self, pending: PendingSend) -> ResponseTurn:
+            self._wait_calls += 1
+            if self._wait_calls == 1:
+                self._app._collab_interjections.put("  please add tests  ")
+            return ResponseTurn(
+                agent=pending.target_agent,
+                text=f"reply {self._wait_calls}",
+                source_cursor=self._wait_calls,
+            )
+
+    router = _ReplayRouterStub(application)
+
+    def fake_halt_listener(*_args, **_kwargs):  # noqa: ANN001
+        return
+
+    application._halt_listener = fake_halt_listener  # type: ignore[method-assign]
+    application._run_collab(workspace_root=workspace, router=router, request=request)
+
+    assert len(router.send_routed_calls) == 2
+    # immediate delivery to the peer of the responding agent
+    assert router.send_routed_calls[0][0] == "codex"
+    assert router.send_routed_calls[0][3] == ["please add tests"]
+    # replay on the next routed turn reaches the previously responding agent
+    assert router.send_routed_calls[1][0] == "claude"
+    assert router.send_routed_calls[1][3] == ["please add tests"]
+
+    exchange_files = sorted((workspace / ".claodex" / "exchanges").glob("*.md"))
+    assert len(exchange_files) == 1
+    content = exchange_files[0].read_text(encoding="utf-8")
+    # interjection is logged once even though it is replayed on the wire
+    assert content.count("please add tests") == 1
+
+
 def test_run_repl_prepends_post_halt_annotation_once(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
