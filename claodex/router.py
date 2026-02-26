@@ -345,6 +345,7 @@ class Router:
         source_agent: str,
         response_text: str,
         user_interjections: list[str] | None = None,
+        echoed_user_anchor: str | None = None,
     ) -> PendingSend:
         """Send one routed collab message from a peer agent.
 
@@ -355,6 +356,9 @@ class Router:
             user_interjections: Optional user messages to append after
                 the routed peer response. Each becomes a separate
                 ``--- user ---`` block in the payload.
+            echoed_user_anchor: Optional previously injected payload text.
+                When provided, any matching user delta row is treated as
+                an echo of routed input and omitted.
 
         Returns:
             PendingSend metadata for waiting on target response.
@@ -365,14 +369,28 @@ class Router:
 
         before_cursor = self.refresh_source(target_agent)
         delta_events, peer_cursor = self.build_delta_for_target(target_agent)
+        normalized_echoed_user_anchor: str | None = None
+        if echoed_user_anchor:
+            echoed_user_body = strip_injected_context(echoed_user_anchor).strip()
+            if echoed_user_body:
+                normalized_echoed_user_anchor = _normalize_for_anchor(echoed_user_body)
 
         # include undelivered user rows from the source log, but skip source
         # assistant rows because response_text already forwards that response
-        blocks: list[tuple[str, str]] = [
-            (event["from"], event["body"])
-            for event in delta_events
-            if event["from"] != source_agent
-        ]
+        blocks: list[tuple[str, str]] = []
+        for event in delta_events:
+            sender = event["from"]
+            body = event["body"]
+            if sender == source_agent:
+                continue
+            if (
+                sender == "user"
+                and normalized_echoed_user_anchor is not None
+                and _normalize_for_anchor(body) == normalized_echoed_user_anchor
+            ):
+                # drop the source-agent echo of the previously routed payload
+                continue
+            blocks.append((sender, body))
         blocks.append((source_agent, response_text))
         for text in user_interjections or ():
             text = text.strip()

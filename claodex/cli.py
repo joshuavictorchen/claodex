@@ -1172,6 +1172,7 @@ class ClaodexApplication:
         stop_reason = "turns_reached"
         turns_completed = 0
         pending: PendingSend | None = None
+        pending_is_routed = False
         last_active_target = request.start_agent
 
         turn_records: list[tuple[PendingSend, ResponseTurn]] = []
@@ -1242,11 +1243,13 @@ class ClaodexApplication:
                     source_agent=seed_response.agent,
                     response_text=seed_response.text,
                 )
+                pending_is_routed = True
                 last_active_target = next_target
                 self._mark_agent_thinking(bus, next_target, sent_at=pending.sent_at)
                 self._log_event(bus, "collab", f"routing -> {next_target}", target=next_target)
             else:
                 pending = router.send_user_message(request.start_agent, request.message)
+                pending_is_routed = False
                 last_active_target = pending.target_agent
                 self._mark_agent_thinking(bus, pending.target_agent, sent_at=pending.sent_at)
                 for source, body in pending.blocks:
@@ -1325,12 +1328,15 @@ class ClaodexApplication:
                 interjections = [text.strip() for text in queued_interjections if text.strip()]
 
                 next_target = peer_agent(response.agent)
+                echoed_user_anchor = pending.sent_text if pending_is_routed else None
                 pending = router.send_routed_message(
                     target_agent=next_target,
                     source_agent=response.agent,
                     response_text=response.text,
                     user_interjections=interjections or None,
+                    echoed_user_anchor=echoed_user_anchor,
                 )
+                pending_is_routed = True
                 last_active_target = next_target
                 self._mark_agent_thinking(bus, next_target, sent_at=pending.sent_at)
                 if interjections:

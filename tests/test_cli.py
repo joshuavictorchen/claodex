@@ -717,7 +717,7 @@ class _RouterStub:
 
     def __init__(self) -> None:
         self.send_user_calls: list[tuple[str, str]] = []
-        self.send_routed_calls: list[tuple[str, str, str, list[str] | None]] = []
+        self.send_routed_calls: list[tuple[str, str, str, list[str] | None, str | None]] = []
         self.sync_calls = 0
 
     def send_user_message(self, target_agent: str, user_text: str) -> PendingSend:
@@ -738,9 +738,10 @@ class _RouterStub:
         source_agent: str,
         response_text: str,
         user_interjections: list[str] | None = None,
+        echoed_user_anchor: str | None = None,
     ) -> PendingSend:
         self.send_routed_calls.append(
-            (target_agent, source_agent, response_text, user_interjections)
+            (target_agent, source_agent, response_text, user_interjections, echoed_user_anchor)
         )
         return PendingSend(
             target_agent=target_agent,
@@ -925,6 +926,25 @@ def test_run_collab_syncs_delivery_cursors_when_wait_raises(tmp_path):
     assert router.sync_calls == 1
 
 
+def test_run_collab_passes_echo_anchor_after_routed_turns(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    application = ClaodexApplication()
+    router = _RouterStub()
+    request = CollabRequest(turns=3, start_agent="claude", message="do the task")
+
+    def fake_halt_listener(*_args, **_kwargs):  # noqa: ANN001
+        return
+
+    application._halt_listener = fake_halt_listener  # type: ignore[method-assign]
+    application._run_collab(workspace_root=workspace, router=router, request=request)
+
+    assert len(router.send_routed_calls) == 2
+    assert router.send_routed_calls[0][4] is None
+    assert router.send_routed_calls[1][4] == "reply"
+
+
 def test_run_repl_prepends_post_halt_annotation_once(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1054,8 +1074,10 @@ def test_run_collab_interjection_logging_ignores_routed_delta_blocks(tmp_path):
             source_agent: str,
             response_text: str,
             user_interjections: list[str] | None = None,
+            echoed_user_anchor: str | None = None,
         ) -> PendingSend:
             assert user_interjections == ["please add tests"]
+            assert echoed_user_anchor is None
             return PendingSend(
                 target_agent=target_agent,
                 before_cursor=1,

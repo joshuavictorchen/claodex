@@ -1,4 +1,4 @@
-Last updated: 2026-02-25 (rev4)
+Last updated: 2026-02-26 (rev5)
 
 ## Overview
 
@@ -43,7 +43,7 @@ claodex/
 - **Interface**: `Router.send_user_message()`, `Router.send_routed_message()`, `Router.wait_for_response()`, `Router.poll_for_response()`, `Router.clear_poll_latch()`, `render_block()`, `strip_injected_context()`
 - **Depends on**: extract, state, constants, errors; Claude debug log (`~/.claude/debug/{session_id}.txt`) as side-channel for Stop-event fallback
 - **Depended on by**: cli
-- **Invariants**: delivery cursor never exceeds peer read cursor; read cursor never moves backward; user messages are stripped of injected context before delta composition; `wait_for_response` Claude turn detection uses `turn_duration → Stop-event → timeout` priority chain; `poll_for_response` uses `turn_duration` marker first then Stop-event latch (`_poll_stop_seen`, keyed `(agent, before_cursor)`) that persists the debug-log signal across idle polls until assistant text arrives; `clear_poll_latch` discards a latched entry when a watch is superseded
+- **Invariants**: delivery cursor never exceeds peer read cursor; read cursor never moves backward; user messages are stripped of injected context before delta composition; routed sends can omit one echoed user delta row by matching an optional anchor from the previous routed payload; `wait_for_response` Claude turn detection uses `turn_duration → Stop-event → timeout` priority chain; `poll_for_response` uses `turn_duration` marker first then Stop-event latch (`_poll_stop_seen`, keyed `(agent, before_cursor)`) that persists the debug-log signal across idle polls until assistant text arrives; `clear_poll_latch` discards a latched entry when a watch is superseded
 
 #### Extraction (`claodex/extract.py`)
 
@@ -119,6 +119,7 @@ User types in CLI REPL
   → input_editor idle tick triggers router.py:poll_for_response()
   → if response ends with `[COLLAB]`, CLI seeds _run_collab() and routes to peer
   → collab loop uses router.py:wait_for_response() for blocking turn waits
+  → after routed turns, collab forwards the previous routed payload as an echo anchor so router.py:send_routed_message() can drop the source-agent user-row echo and avoid repeated context
 
 Sidebar process loop
   → sidebar.py tails `.claodex/ui/events.jsonl` from tracked file offset
@@ -145,7 +146,7 @@ State on disk:
 | Reattach | `cli.py:_run_attach` | Resolves layout, validates agent panes, relaunches sidebar if not running, resumes REPL |
 | Normal message sending | `cli.py:_run_repl`, `router.py:send_user_message` | Fire-and-forget send; registers/updates one pending watch per target (superseding prior watch) |
 | Agent-initiated collab detection | `cli.py:_make_idle_callback`, `router.py:poll_for_response` | Idle poll checks pending watches for `[COLLAB]`, seeds `_run_collab` on trigger |
-| Collab mode | `cli.py:_run_collab` | Automated multi-turn; uses `Router.send_routed_message` + `wait_for_response` |
+| Collab mode | `cli.py:_run_collab` | Automated multi-turn; uses `Router.send_routed_message` + `wait_for_response`, and passes a routed-echo anchor after routed turns to prevent repeated user context |
 | Response detection | `router.py:_scan_*_turn_end_marker`, `_scan_claude_debug_stop_event`, `_detect_interference` | Claude: `turn_duration` → debug-log Stop event → timeout; Codex: `task_complete` after `task_started`. Interference detection aborts on unexpected user input. |
 | JSONL extraction | `extract.py:_extract_claude_room_events`, `_extract_codex_room_events` | Agent-specific parsers |
 | Header stripping | `router.py:strip_injected_context` | Removes nested `--- source ---` blocks from forwarded user messages |

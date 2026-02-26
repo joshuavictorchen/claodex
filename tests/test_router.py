@@ -511,6 +511,49 @@ final instruction""",
     assert "--- codex ---\nprior analysis" not in sent_messages[0]
 
 
+def test_send_routed_message_drops_echoed_routed_user_row(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    routed_payload = """--- user ---
+original request
+
+--- claude ---
+first response"""
+    _write_jsonl(claude_session, _claude_entries("ack", "ack"))
+    _write_jsonl(codex_session, _codex_entries(routed_payload, "codex analysis"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 2)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "claude", 0)
+    write_delivery_cursor(workspace, "codex", 2)
+
+    sent_messages: list[str] = []
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: sent_messages.append(content),
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=5),
+    )
+
+    router.send_routed_message(
+        target_agent="claude",
+        source_agent="codex",
+        response_text="next routed response",
+        echoed_user_anchor=routed_payload,
+    )
+
+    assert len(sent_messages) == 1
+    assert sent_messages[0] == "--- codex ---\nnext routed response"
+    assert "--- user ---\noriginal request" not in sent_messages[0]
+
+
 def test_sync_delivery_cursors_aligns_to_peer_read_positions(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
