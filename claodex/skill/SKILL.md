@@ -67,7 +67,9 @@ drift is the primary cause of agents solving slightly different problems.
 The user can start a multi-turn automated exchange between you and your
 peer using `/collab`. You can also initiate collab yourself by ending your
 message with `[COLLAB]` on its own line — the router will route your
-response to your peer and start an automated exchange.
+response to your peer and start an automated exchange. Do not self-initiate
+collab unless the user requests it or the task genuinely requires peer
+input.
 
 When collab is active:
 
