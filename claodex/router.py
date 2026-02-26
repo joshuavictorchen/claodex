@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from .constants import (
+    AGENTS,
     CLAUDE_DEBUG_LOG_PATTERN,
     CLAUDE_STOP_EVENT_RE,
     STUCK_SKIP_ATTEMPTS,
@@ -265,6 +266,19 @@ class Router:
             end_line=peer_read_cursor,
         )
         return events, peer_read_cursor
+
+    def sync_delivery_cursors(self) -> None:
+        """Align both delivery cursors with current peer read positions.
+
+        This is used when collaboration terminates after receiving a final
+        response but before routing it onward. Advancing delivery cursors at
+        shutdown avoids stale collab rows leaking into the next normal-mode
+        user send as undelivered delta.
+        """
+        for target_agent in AGENTS:
+            peer = peer_agent(target_agent)
+            peer_read_cursor = self.refresh_source(peer)
+            write_delivery_cursor(self.workspace_root, target_agent, peer_read_cursor)
 
     def compose_user_message(
         self, target_agent: str, user_text: str

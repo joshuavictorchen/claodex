@@ -718,6 +718,7 @@ class _RouterStub:
     def __init__(self) -> None:
         self.send_user_calls: list[tuple[str, str]] = []
         self.send_routed_calls: list[tuple[str, str, str, list[str] | None]] = []
+        self.sync_calls = 0
 
     def send_user_message(self, target_agent: str, user_text: str) -> PendingSend:
         self.send_user_calls.append((target_agent, user_text))
@@ -747,6 +748,9 @@ class _RouterStub:
             sent_text=response_text,
             sent_at=datetime.now(timezone.utc),
         )
+
+    def sync_delivery_cursors(self) -> None:
+        self.sync_calls += 1
 
 
 class _ReplRouterStub:
@@ -879,6 +883,46 @@ def test_run_collab_logs_recv_event_for_seed_turn(tmp_path):
             "meta": None,
         }
     ]
+
+
+def test_run_collab_syncs_delivery_cursors_on_clean_exit(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    application = ClaodexApplication()
+    router = _RouterStub()
+    request = CollabRequest(turns=1, start_agent="claude", message="do the task")
+
+    def fake_halt_listener(*_args, **_kwargs):  # noqa: ANN001
+        return
+
+    application._halt_listener = fake_halt_listener  # type: ignore[method-assign]
+    application._run_collab(workspace_root=workspace, router=router, request=request)
+
+    assert router.sync_calls == 1
+
+
+def test_run_collab_syncs_delivery_cursors_when_wait_raises(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    application = ClaodexApplication()
+    request = CollabRequest(turns=2, start_agent="claude", message="do the task")
+
+    class _FailingRouter(_RouterStub):
+        def wait_for_response(self, pending: PendingSend) -> ResponseTurn:
+            del pending
+            raise ClaodexError("router failed")
+
+    router = _FailingRouter()
+
+    def fake_halt_listener(*_args, **_kwargs):  # noqa: ANN001
+        return
+
+    application._halt_listener = fake_halt_listener  # type: ignore[method-assign]
+    application._run_collab(workspace_root=workspace, router=router, request=request)
+
+    assert router.sync_calls == 1
 
 
 def test_run_repl_prepends_post_halt_annotation_once(tmp_path):
@@ -1023,6 +1067,9 @@ def test_run_collab_interjection_logging_ignores_routed_delta_blocks(tmp_path):
                 ],
                 sent_at=datetime(2026, 2, 24, 1, 1, 30, tzinfo=timezone.utc),
             )
+
+        def sync_delivery_cursors(self) -> None:
+            return
 
     router = _InterjectionRouterStub(application)
 

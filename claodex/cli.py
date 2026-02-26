@@ -1361,6 +1361,10 @@ class ClaodexApplication:
         finally:
             stop_listener.set()
             listener.join(timeout=0.5)
+            try:
+                router.sync_delivery_cursors()
+            except ClaodexError as exc:
+                self._log_event(bus, "error", f"delivery cursor sync failed: {exc}")
             self._close_exchange_log(exchange_handle, turns_completed, stop_reason)
 
         # any queued interjections that were not routed inline are dropped

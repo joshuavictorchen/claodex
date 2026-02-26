@@ -36,3 +36,31 @@ files changed: `claodex/router.py`, `claodex/cli.py`,
 
 verified: `PYTHONPATH=. pytest -q tests/test_router.py tests/test_cli.py`
 → 90 passed; `PYTHONPATH=. pytest -q` → 196 passed
+
+## 2026-02-26 — fix stale delivery cursors after collab termination
+
+**problem**: after a collab ended, the first normal-mode message to an agent
+included an extra `--- user ---` block — an echo of a previously routed message
+leaking through the peer's JSONL as undelivered delta.
+
+**root cause**: when collab terminates (convergence, halt, error, or turn
+limit), the last received response is never routed onward. the delivery cursor
+for the non-final agent remains stale by one turn. when the user sends the next
+message, `compose_user_message()` → `build_delta_for_target()` picks up the
+stale events — including user entries that are echoes of previously routed
+messages — and prepends them as delta. the prior routed-context fix made this
+more visible because `strip_injected_context()` now cleanly extracts user
+blocks from routed messages, producing recognizable duplicate user headers
+instead of opaque nested blobs.
+
+**solution**: added `Router.sync_delivery_cursors()` which aligns both delivery
+cursors to current peer read positions. called in `_run_collab()`'s `finally`
+block so all exit paths (converged, halted, error, turn limit) are covered. a
+sync failure is logged but does not prevent exchange log close or interjection
+drain.
+
+files changed: `claodex/router.py`, `claodex/cli.py`,
+`tests/test_router.py`, `tests/test_cli.py`
+
+verified: `PYTHONPATH=. pytest -q tests/test_router.py tests/test_cli.py`
+→ 93 passed; `PYTHONPATH=. pytest -q` → 199 passed
