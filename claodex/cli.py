@@ -846,6 +846,13 @@ class ClaodexApplication:
                     if target in self._pending_watches:
                         old = self._pending_watches[target]
                         router.clear_poll_latch(target, old.before_cursor)
+                        # preserve prior pending blocks for seeded exchange logs
+                        if old.blocks:
+                            pending.blocks = [*old.blocks, *pending.blocks]
+                            if old.sent_at is not None and (
+                                pending.sent_at is None or old.sent_at < pending.sent_at
+                            ):
+                                pending.sent_at = old.sent_at
                     self._pending_watches[target] = pending
                 except ClaodexError as exc:
                     self._log_event(bus, "error", str(exc))
@@ -1314,7 +1321,8 @@ class ClaodexApplication:
                     break
 
                 # include any user interjections typed during this turn
-                interjections = _drain_queue(self._collab_interjections)
+                queued_interjections = _drain_queue(self._collab_interjections)
+                interjections = [text.strip() for text in queued_interjections if text.strip()]
 
                 next_target = peer_agent(response.agent)
                 pending = router.send_routed_message(
@@ -1326,10 +1334,10 @@ class ClaodexApplication:
                 last_active_target = next_target
                 self._mark_agent_thinking(bus, next_target, sent_at=pending.sent_at)
                 if interjections:
-                    for source, body in pending.blocks[1:]:
+                    for body in interjections:
                         exchange_first_message = self._append_exchange_message(
                             exchange_handle,
-                            source,
+                            "user",
                             body,
                             pending.sent_at,
                             first_message=exchange_first_message,

@@ -334,8 +334,8 @@ class Router:
             source_agent: Source agent whose response is being routed.
             response_text: Source response text.
             user_interjections: Optional user messages to append after
-                the peer response. Each becomes a separate ``--- user ---``
-                block in the payload.
+                the routed peer response. Each becomes a separate
+                ``--- user ---`` block in the payload.
 
         Returns:
             PendingSend metadata for waiting on target response.
@@ -345,22 +345,29 @@ class Router:
             raise ClaodexError("validation error: routed response cannot be empty")
 
         before_cursor = self.refresh_source(target_agent)
-        # build structured blocks: peer response + any user interjections
-        blocks: list[tuple[str, str]] = [(source_agent, response_text)]
-        payload = render_block(source_agent, response_text)
+        delta_events, peer_cursor = self.build_delta_for_target(target_agent)
+
+        # include undelivered user rows from the source log, but skip source
+        # assistant rows because response_text already forwards that response
+        blocks: list[tuple[str, str]] = [
+            (event["from"], event["body"])
+            for event in delta_events
+            if event["from"] != source_agent
+        ]
+        blocks.append((source_agent, response_text))
         for text in user_interjections or ():
             text = text.strip()
             if text:
                 blocks.append(("user", text))
-                payload += "\n\n" + render_block("user", text)
+
+        payload = "\n\n".join(render_block(source, body) for source, body in blocks)
 
         target = self.participants.for_agent(target_agent)
         self._ensure_target_alive(target)
         sent_at = datetime.now(timezone.utc)
         self._paste_content(target.tmux_pane, payload)
 
-        source_cursor = read_read_cursor(self.workspace_root, source_agent)
-        write_delivery_cursor(self.workspace_root, target_agent, source_cursor)
+        write_delivery_cursor(self.workspace_root, target_agent, peer_cursor)
         return PendingSend(
             target_agent=target_agent,
             before_cursor=before_cursor,

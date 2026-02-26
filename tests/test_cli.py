@@ -754,19 +754,24 @@ class _ReplRouterStub:
 
     def __init__(self) -> None:
         self.sent_user_messages: list[tuple[str, str]] = []
+        self.clear_latch_calls: list[tuple[str, int]] = []
+        self._next_before_cursor = 0
         self.config = type("Config", (), {"turn_timeout_seconds": 18000})()
 
     def send_user_message(self, target_agent: str, user_text: str) -> PendingSend:
         self.sent_user_messages.append((target_agent, user_text))
+        before_cursor = self._next_before_cursor
+        self._next_before_cursor += 1
         return PendingSend(
             target_agent=target_agent,
-            before_cursor=0,
+            before_cursor=before_cursor,
             sent_text=user_text,
+            blocks=[("user", user_text)],
             sent_at=datetime.now(timezone.utc),
         )
 
-    def clear_poll_latch(self, _agent: str, _before_cursor: int) -> None:
-        return
+    def clear_poll_latch(self, agent: str, before_cursor: int) -> None:
+        self.clear_latch_calls.append((agent, before_cursor))
 
     def poll_for_response(self, _pending: PendingSend):  # noqa: ANN001
         return None
@@ -918,6 +923,121 @@ def test_run_repl_prepends_post_halt_annotation_once(tmp_path):
     )
     assert router.sent_user_messages[1] == ("claude", "second follow-up")
     assert application._post_halt is False
+
+
+def test_run_repl_superseded_watch_preserves_blocks_for_seed_logs(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_file = tmp_path / "session.jsonl"
+    session_file.write_text("", encoding="utf-8")
+    participants = _build_participants(workspace, session_file)
+    application = ClaodexApplication()
+    router = _ReplRouterStub()
+
+    events = iter(
+        [
+            InputEvent(kind="submit", value="first message"),
+            InputEvent(kind="submit", value="second message"),
+            InputEvent(kind="quit"),
+        ]
+    )
+
+    def fake_read_event(_target: str, on_idle=None):  # noqa: ANN001
+        _ = on_idle
+        return next(events)
+
+    with (
+        patch("claodex.cli.UIEventBus", return_value=_BusRecorder()),
+        patch("claodex.cli.Router", return_value=router),
+        patch("claodex.cli.kill_session"),
+        patch.object(application, "_read_event", side_effect=fake_read_event),
+    ):
+        application._run_repl(workspace, participants)
+
+    assert router.sent_user_messages == [
+        ("claude", "first message"),
+        ("claude", "second message"),
+    ]
+    assert router.clear_latch_calls == [("claude", 0)]
+    assert application._pending_watches["claude"].blocks == [
+        ("user", "first message"),
+        ("user", "second message"),
+    ]
+
+
+def test_run_collab_interjection_logging_ignores_routed_delta_blocks(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    application = ClaodexApplication()
+    bus = _BusRecorder()
+    request = CollabRequest(turns=2, start_agent="claude", message="start task")
+
+    class _InterjectionRouterStub:
+        def __init__(self, app: ClaodexApplication) -> None:
+            self._app = app
+            self._wait_calls = 0
+
+        def send_user_message(self, target_agent: str, user_text: str) -> PendingSend:
+            return PendingSend(
+                target_agent=target_agent,
+                before_cursor=0,
+                sent_text=user_text,
+                blocks=[("user", user_text)],
+                sent_at=datetime(2026, 2, 24, 1, 0, 0, tzinfo=timezone.utc),
+            )
+
+        def wait_for_response(self, pending: PendingSend) -> ResponseTurn:
+            self._wait_calls += 1
+            if self._wait_calls == 1:
+                self._app._collab_interjections.put("  please add tests  ")
+                return ResponseTurn(
+                    agent=pending.target_agent,
+                    text="claude response",
+                    source_cursor=1,
+                    received_at=datetime(2026, 2, 24, 1, 1, 0, tzinfo=timezone.utc),
+                )
+            return ResponseTurn(
+                agent=pending.target_agent,
+                text="codex response",
+                source_cursor=2,
+                received_at=datetime(2026, 2, 24, 1, 2, 0, tzinfo=timezone.utc),
+            )
+
+        def send_routed_message(
+            self,
+            target_agent: str,
+            source_agent: str,
+            response_text: str,
+            user_interjections: list[str] | None = None,
+        ) -> PendingSend:
+            assert user_interjections == ["please add tests"]
+            return PendingSend(
+                target_agent=target_agent,
+                before_cursor=1,
+                sent_text=response_text,
+                blocks=[
+                    ("user", "historic delta"),
+                    (source_agent, response_text),
+                    ("user", "please add tests"),
+                ],
+                sent_at=datetime(2026, 2, 24, 1, 1, 30, tzinfo=timezone.utc),
+            )
+
+    router = _InterjectionRouterStub(application)
+
+    def fake_halt_listener(*_args, **_kwargs):  # noqa: ANN001
+        return
+
+    application._halt_listener = fake_halt_listener  # type: ignore[method-assign]
+    application._run_collab(workspace_root=workspace, router=router, request=request, bus=bus)
+
+    exchange_files = sorted((workspace / ".claodex" / "exchanges").glob("*.md"))
+    assert len(exchange_files) == 1
+    content = exchange_files[0].read_text(encoding="utf-8")
+    assert content.count("claude response") == 1
+    assert content.count("please add tests") == 1
+    assert "historic delta" not in content
 
 
 # -- exchange log tests --
