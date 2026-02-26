@@ -863,8 +863,8 @@ second
 task for you
 ```
 
-**B sees**: the user's message to A appears as delta (it is in A's log), but
-A's response does not (A hasn't responded yet):
+**B sees**: the user's message to A appears as context, but A's response does
+not (A hasn't responded yet):
 ```
 --- user ---
 task for you
@@ -1109,9 +1109,9 @@ discuss the API
 <A's response>
 ```
 
-B receives the user's original message as delta (it is in A's log) alongside
-A's response. on subsequent routed turns, each agent sees only content it has
-not already received.
+B receives the user's original message alongside A's response.
+on subsequent routed turns, each agent sees only content it has not already
+received.
 
 **turn 3 — A sees**:
 ```
@@ -1144,6 +1144,15 @@ Interjections appear before the peer response (chronological order: the user
 typed during the turn, the response completed after). interjections are
 replayed to the other agent on the following turn so both agents see them.
 
+**following routed turn — A sees**:
+```
+--- user ---
+important note
+
+--- codex ---
+<B's response>
+```
+
 ---
 
 #### C2b. Collab with multiple user interjections
@@ -1170,6 +1179,18 @@ second note
 Multiple interjections each get their own `--- user ---` block, all placed
 before the peer response. ordering is chronological: all interjections first,
 then the response.
+
+**following routed turn — A sees**:
+```
+--- user ---
+first note
+
+--- user ---
+second note
+
+--- codex ---
+<B's response>
+```
 
 ---
 
@@ -1221,7 +1242,7 @@ C6/C8).
 **A sees**: the user's message (normal delivery). A responds with `[COLLAB]`.
 
 **B sees** (turn 1, automatic): A's full response including the `[COLLAB]`
-signal, plus any undelivered user context from A's log:
+signal, plus any earlier user context B has not yet received:
 ```
 --- user ---
 design the auth flow
@@ -1308,8 +1329,10 @@ delta for B on the next normal-mode message (same as C6).
 
 > One agent's pane is killed during collab.
 
-**behavior**: collab aborts with an error. both agents' delivery state is
-synchronized. the dead agent is reported in the sidebar log.
+**behavior**: collab aborts with an error and reports the dead agent.
+if a completed response was received but not routed when the abort occurred,
+that response is preserved for the peer's next normal-mode message.
+otherwise, no stale collab delta is injected.
 
 ---
 
@@ -1318,7 +1341,9 @@ synchronized. the dead agent is reported in the sidebar log.
 > An agent fails to respond within the timeout (default: 18000s).
 
 **behavior**: collab aborts with an error identifying which agent timed out.
-both agents' delivery state is synchronized.
+if a completed response was received but not routed when the abort occurred,
+that response is preserved for the peer's next normal-mode message.
+otherwise, no stale collab delta is injected.
 
 ---
 
@@ -1362,6 +1387,38 @@ context.
 
 **behavior**: no stale delta — that agent already has its own content. the
 user's message is delivered normally with any new peer events.
+
+---
+
+#### PC4. Halted collab: send to responder first, then to peer
+
+> Collab was halted after A produced an unrouted final response. user first
+> sends to A, A replies, then user sends to B.
+
+**input pane**:
+1. `A ❯ first post-halt message`
+2. A responds
+3. `B ❯ direct to peer`
+
+**B sees** (on step 3):
+```
+--- claude ---
+<A's final collab response>
+
+--- user ---
+(collab halted by user)
+
+first post-halt message
+
+--- claude ---
+<A's reply to first post-halt message>
+
+--- user ---
+direct to peer
+```
+
+This ensures no content is dropped when the first post-halt send goes to the
+responding agent before the peer.
 
 ---
 
