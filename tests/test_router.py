@@ -1739,6 +1739,289 @@ def test_clear_poll_latch_removes_matching_entry(tmp_path):
 # -- empty [COLLAB] edge case --
 
 
+def test_poll_for_response_stop_event_empty_user_row_blocks_stale(tmp_path):
+    """Empty user/user row is a staleness boundary for stop-event fallback."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    entries = [
+        {
+            "timestamp": "2026-02-22T10:00:00Z",
+            "type": "user",
+            "sessionId": "claude-session",
+            "message": {"role": "user", "content": "run checks"},
+        },
+        {
+            "timestamp": "2026-02-22T10:00:01Z",
+            "type": "assistant",
+            "sessionId": "claude-session",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "running tests now"}],
+            },
+        },
+        # empty user row — should still invalidate stale assistant text
+        {
+            "timestamp": "2026-02-22T10:00:02Z",
+            "type": "user",
+            "sessionId": "claude-session",
+            "message": {"role": "user", "content": ""},
+        },
+    ]
+    _write_jsonl(claude_session, entries)
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    debug_log = tmp_path / "claude-session.txt"
+    debug_log.write_text(
+        "2026-02-22T10:00:03.000Z [DEBUG] Getting matching hook commands for Stop\n"
+    )
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
+    )
+
+    import claodex.router as router_module
+
+    original_pattern = router_module.CLAUDE_DEBUG_LOG_PATTERN
+    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace(
+        "claude-session", "{session_id}"
+    )
+    try:
+        pending = PendingSend(
+            target_agent="claude",
+            before_cursor=0,
+            sent_text="--- user ---\nrun checks",
+            sent_at=datetime(2026, 2, 22, 10, 0, 0, tzinfo=timezone.utc),
+        )
+
+        # stale "running tests now" should be blocked by the empty user boundary
+        result = router.poll_for_response(pending)
+        assert result is None
+        assert ("claude", 0) in router._poll_stop_seen
+
+        # fresh text after the boundary should be returned
+        _write_jsonl(
+            claude_session,
+            [
+                *entries,
+                {
+                    "timestamp": "2026-02-22T10:00:04Z",
+                    "type": "assistant",
+                    "sessionId": "claude-session",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "tests passed"}],
+                    },
+                },
+            ],
+        )
+
+        result = router.poll_for_response(pending)
+        assert result is not None
+        assert result.text == "tests passed"
+    finally:
+        router_module.CLAUDE_DEBUG_LOG_PATTERN = original_pattern
+
+
+def test_poll_for_response_stop_event_meta_user_row_blocks_stale(tmp_path):
+    """Meta-text user/user row is a staleness boundary for stop-event fallback."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    entries = [
+        {
+            "timestamp": "2026-02-22T10:00:00Z",
+            "type": "user",
+            "sessionId": "claude-session",
+            "message": {"role": "user", "content": "run checks"},
+        },
+        {
+            "timestamp": "2026-02-22T10:00:01Z",
+            "type": "assistant",
+            "sessionId": "claude-session",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "running tests now"}],
+            },
+        },
+        # meta user row — should still invalidate stale assistant text
+        {
+            "timestamp": "2026-02-22T10:00:02Z",
+            "type": "user",
+            "sessionId": "claude-session",
+            "message": {
+                "role": "user",
+                "content": "<system-reminder>task tools not used</system-reminder>",
+            },
+        },
+    ]
+    _write_jsonl(claude_session, entries)
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    debug_log = tmp_path / "claude-session.txt"
+    debug_log.write_text(
+        "2026-02-22T10:00:03.000Z [DEBUG] Getting matching hook commands for Stop\n"
+    )
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
+    )
+
+    import claodex.router as router_module
+
+    original_pattern = router_module.CLAUDE_DEBUG_LOG_PATTERN
+    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace(
+        "claude-session", "{session_id}"
+    )
+    try:
+        pending = PendingSend(
+            target_agent="claude",
+            before_cursor=0,
+            sent_text="--- user ---\nrun checks",
+            sent_at=datetime(2026, 2, 22, 10, 0, 0, tzinfo=timezone.utc),
+        )
+
+        # stale text should be blocked by the meta user boundary
+        result = router.poll_for_response(pending)
+        assert result is None
+        assert ("claude", 0) in router._poll_stop_seen
+
+        # fresh text after the boundary should be returned
+        _write_jsonl(
+            claude_session,
+            [
+                *entries,
+                {
+                    "timestamp": "2026-02-22T10:00:04Z",
+                    "type": "assistant",
+                    "sessionId": "claude-session",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "all good"}],
+                    },
+                },
+            ],
+        )
+
+        result = router.poll_for_response(pending)
+        assert result is not None
+        assert result.text == "all good"
+    finally:
+        router_module.CLAUDE_DEBUG_LOG_PATTERN = original_pattern
+
+
+def test_wait_for_response_claude_stop_event_meta_user_boundary(tmp_path):
+    """wait_for_response with stop-event fallback respects meta user row boundary."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    # stale assistant text followed by meta user row, then fresh assistant text
+    _write_jsonl(
+        claude_session,
+        [
+            {
+                "timestamp": "2026-02-22T10:00:00Z",
+                "type": "user",
+                "sessionId": "claude-session",
+                "message": {"role": "user", "content": "check it"},
+            },
+            {
+                "timestamp": "2026-02-22T10:00:01Z",
+                "type": "assistant",
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "stale text"}],
+                },
+            },
+            {
+                "timestamp": "2026-02-22T10:00:02Z",
+                "type": "user",
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "user",
+                    "content": "<system-reminder>task tools reminder</system-reminder>",
+                },
+            },
+            {
+                "timestamp": "2026-02-22T10:00:03Z",
+                "type": "assistant",
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "fresh text"}],
+                },
+            },
+        ],
+    )
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    debug_log = tmp_path / "claude-session.txt"
+    debug_log.write_text(
+        "2099-01-01T00:00:00.000Z [DEBUG] Getting matching hook commands for Stop\n"
+    )
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=5),
+    )
+
+    import claodex.router as router_module
+
+    original_pattern = router_module.CLAUDE_DEBUG_LOG_PATTERN
+    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace(
+        "claude-session", "{session_id}"
+    )
+    try:
+        pending = PendingSend(
+            target_agent="claude",
+            before_cursor=0,
+            sent_text="--- user ---\ncheck it",
+        )
+        response = router.wait_for_response(pending=pending, timeout_seconds=2.0)
+        assert response.text == "fresh text"
+    finally:
+        router_module.CLAUDE_DEBUG_LOG_PATTERN = original_pattern
+
+
 def test_strip_trailing_signal_empty_result():
     """Stripping [COLLAB] from a message with only the signal yields empty text."""
     result = _strip_trailing_signal("[COLLAB]", COLLAB_SIGNAL)

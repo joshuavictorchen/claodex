@@ -33,8 +33,6 @@ _META_USER_PATTERNS = (
 from .errors import ClaodexError
 from .extract import (
     _extract_claude_assistant_text,
-    _extract_claude_user_text,
-    _is_tool_result_only_claude_user_entry,
     extract_room_events_from_window,
 )
 from .state import (
@@ -388,7 +386,9 @@ class Router:
                 and normalized_echoed_user_anchor is not None
                 and _normalize_for_anchor(body) == normalized_echoed_user_anchor
             ):
-                # drop the source-agent echo of the previously routed payload
+                # drop the source-agent echo of the previously routed payload;
+                # drops all matching rows, safe because at most one echoed
+                # user row appears per routed delta window
                 continue
             blocks.append((sender, body))
         blocks.append((source_agent, response_text))
@@ -935,8 +935,9 @@ class Router:
         Stop-event fallback can race against delayed JSONL writes. When Claude
         used tools, an early assistant text frame may appear before a
         tool_result user row, with the final assistant frame appended later.
-        Treating every user row (including tool_result rows) as a boundary for
-        this fallback avoids returning that stale pre-tool frame.
+        Every user row — including empty, meta-only, and tool_result rows — is
+        treated as a staleness boundary so that only assistant text produced
+        after the last user input is returned.
         """
         lines = read_lines_between(
             participant.session_file,
@@ -965,15 +966,11 @@ class Router:
             message = entry.get("message", {})
             role = message.get("role") if isinstance(message, dict) else None
 
+            # any user row is a staleness boundary — the assistant will
+            # produce a fresh response after it, so prior text is stale.
+            # this is intentionally unconditional: empty, meta-only, and
+            # tool_result user rows all invalidate earlier assistant text
             if entry_type == "user" and role == "user":
-                if isinstance(message, dict) and _is_tool_result_only_claude_user_entry(message):
-                    latest_user_boundary_line = absolute_line
-                    latest_assistant_text = None
-                    continue
-
-                user_text = _extract_claude_user_text(message.get("content"))
-                if not user_text.strip() or _is_meta_user_text(user_text):
-                    continue
                 latest_user_boundary_line = absolute_line
                 latest_assistant_text = None
                 continue
