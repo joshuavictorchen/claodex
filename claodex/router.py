@@ -31,7 +31,12 @@ _META_USER_PATTERNS = (
     "<system-reminder>",
 )
 from .errors import ClaodexError
-from .extract import extract_room_events_from_window
+from .extract import (
+    _extract_claude_assistant_text,
+    _extract_claude_user_text,
+    _is_tool_result_only_claude_user_entry,
+    extract_room_events_from_window,
+)
 from .state import (
     Participant,
     SessionParticipants,
@@ -484,8 +489,8 @@ class Router:
                         participant, send_time
                     )
                 if saw_stop_event:
-                    assistant_text = self._latest_assistant_message_between(
-                        source_agent=target_agent,
+                    assistant_text = self._latest_claude_stop_fallback_message_between(
+                        participant=participant,
                         start_line=pending.before_cursor,
                         end_line=current_cursor,
                     )
@@ -584,8 +589,8 @@ class Router:
                 if saw_stop_event:
                     self._poll_stop_seen.add(latch_key)
             if saw_stop_event:
-                assistant_text = self._latest_assistant_message_between(
-                    source_agent=target_agent,
+                assistant_text = self._latest_claude_stop_fallback_message_between(
+                    participant=participant,
                     start_line=pending.before_cursor,
                     end_line=current_cursor,
                 )
@@ -900,6 +905,71 @@ class Router:
         if not assistant_events:
             return None
         return assistant_events[-1]["body"]
+
+    def _latest_claude_stop_fallback_message_between(
+        self,
+        participant: Participant,
+        start_line: int,
+        end_line: int,
+    ) -> str | None:
+        """Return latest Claude assistant text after the last user boundary.
+
+        Stop-event fallback can race against delayed JSONL writes. When Claude
+        used tools, an early assistant text frame may appear before a
+        tool_result user row, with the final assistant frame appended later.
+        Treating every user row (including tool_result rows) as a boundary for
+        this fallback avoids returning that stale pre-tool frame.
+        """
+        lines = read_lines_between(
+            participant.session_file,
+            start_line=start_line,
+            end_line=end_line,
+        )
+
+        latest_user_boundary_line = start_line
+        latest_assistant_text: str | None = None
+
+        for offset, raw_line in enumerate(lines, start=1):
+            absolute_line = start_line + offset
+            raw_line = raw_line.strip()
+            if not raw_line:
+                continue
+            try:
+                entry = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("isSidechain") or entry.get("isMeta"):
+                continue
+
+            entry_type = entry.get("type")
+            message = entry.get("message", {})
+            role = message.get("role") if isinstance(message, dict) else None
+
+            if entry_type == "user" and role == "user":
+                if isinstance(message, dict) and _is_tool_result_only_claude_user_entry(message):
+                    latest_user_boundary_line = absolute_line
+                    latest_assistant_text = None
+                    continue
+
+                user_text = _extract_claude_user_text(message.get("content"))
+                if not user_text.strip() or _is_meta_user_text(user_text):
+                    continue
+                latest_user_boundary_line = absolute_line
+                latest_assistant_text = None
+                continue
+
+            if entry_type != "assistant" or role != "assistant":
+                continue
+            if absolute_line <= latest_user_boundary_line:
+                continue
+
+            assistant_text = _extract_claude_assistant_text(message.get("content"))
+            if assistant_text.strip():
+                latest_assistant_text = assistant_text
+
+        return latest_assistant_text
 
     def _turn_end_marker_label(self, target_agent: str) -> str:
         """Return human-readable marker contract for one agent."""

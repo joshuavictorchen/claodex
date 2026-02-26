@@ -1393,6 +1393,228 @@ def test_poll_for_response_stop_event_latch_survives_across_polls(tmp_path):
         router_module.CLAUDE_DEBUG_LOG_PATTERN = original_pattern
 
 
+def test_poll_for_response_stop_event_skips_stale_pre_tool_result_text(tmp_path):
+    """Stop fallback ignores assistant text before a later tool_result user row."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    stale_entries = [
+        {
+            "timestamp": "2026-02-22T10:00:00Z",
+            "type": "user",
+            "sessionId": "claude-session",
+            "message": {"role": "user", "content": "run checks"},
+        },
+        {
+            "timestamp": "2026-02-22T10:00:01Z",
+            "type": "assistant",
+            "sessionId": "claude-session",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "running tests now"},
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "Bash",
+                        "input": {"cmd": "pytest"},
+                    },
+                ],
+            },
+        },
+        {
+            "timestamp": "2026-02-22T10:00:02Z",
+            "type": "user",
+            "sessionId": "claude-session",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": "ok",
+                    }
+                ],
+            },
+        },
+    ]
+    _write_jsonl(claude_session, stale_entries)
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    debug_log = tmp_path / "claude-session.txt"
+    debug_log.write_text(
+        "2026-02-22T10:00:03.000Z [DEBUG] Getting matching hook commands for Stop\n"
+    )
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
+    )
+
+    import claodex.router as router_module
+
+    original_pattern = router_module.CLAUDE_DEBUG_LOG_PATTERN
+    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace(
+        "claude-session", "{session_id}"
+    )
+    try:
+        pending = PendingSend(
+            target_agent="claude",
+            before_cursor=0,
+            sent_text="--- user ---\nrun checks",
+            sent_at=datetime(2026, 2, 22, 10, 0, 0, tzinfo=timezone.utc),
+        )
+
+        # stale assistant text exists but appears before tool_result boundary
+        result = router.poll_for_response(pending)
+        assert result is None
+        assert ("claude", 0) in router._poll_stop_seen
+
+        # append final assistant text after tool_result
+        _write_jsonl(
+            claude_session,
+            [
+                *stale_entries,
+                {
+                    "timestamp": "2026-02-22T10:00:04Z",
+                    "type": "assistant",
+                    "sessionId": "claude-session",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "tests passed"}],
+                    },
+                },
+            ],
+        )
+
+        result = router.poll_for_response(pending)
+        assert result is not None
+        assert result.text == "tests passed"
+        assert ("claude", 0) not in router._poll_stop_seen
+    finally:
+        router_module.CLAUDE_DEBUG_LOG_PATTERN = original_pattern
+
+
+def test_poll_for_response_stop_event_ignores_meta_and_sidechain_entries(tmp_path):
+    """Stop fallback ignores entry-level isMeta/isSidechain rows."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    _write_jsonl(
+        claude_session,
+        [
+            {
+                "timestamp": "2026-02-22T10:00:00Z",
+                "type": "user",
+                "sessionId": "claude-session",
+                "message": {"role": "user", "content": "run checks"},
+            },
+            {
+                "timestamp": "2026-02-22T10:00:01Z",
+                "type": "assistant",
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "running tests now"},
+                        {"type": "tool_use", "id": "tool-1", "name": "Bash", "input": {"cmd": "pytest"}},
+                    ],
+                },
+            },
+            {
+                "timestamp": "2026-02-22T10:00:02Z",
+                "type": "user",
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": "ok"}],
+                },
+            },
+            {
+                "timestamp": "2026-02-22T10:00:03Z",
+                "type": "assistant",
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "tests passed"}],
+                },
+            },
+            {
+                "timestamp": "2026-02-22T10:00:04Z",
+                "type": "user",
+                "isMeta": True,
+                "sessionId": "claude-session",
+                "message": {"role": "user", "content": "skill registration body"},
+            },
+            {
+                "timestamp": "2026-02-22T10:00:05Z",
+                "type": "assistant",
+                "isSidechain": True,
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "sidechain noise"}],
+                },
+            },
+        ],
+    )
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    debug_log = tmp_path / "claude-session.txt"
+    debug_log.write_text(
+        "2026-02-22T10:00:06.000Z [DEBUG] Getting matching hook commands for Stop\n"
+    )
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
+    )
+
+    import claodex.router as router_module
+
+    original_pattern = router_module.CLAUDE_DEBUG_LOG_PATTERN
+    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace(
+        "claude-session", "{session_id}"
+    )
+    try:
+        pending = PendingSend(
+            target_agent="claude",
+            before_cursor=0,
+            sent_text="--- user ---\nrun checks",
+            sent_at=datetime(2026, 2, 22, 10, 0, 0, tzinfo=timezone.utc),
+        )
+
+        result = router.poll_for_response(pending)
+        assert result is not None
+        assert result.text == "tests passed"
+    finally:
+        router_module.CLAUDE_DEBUG_LOG_PATTERN = original_pattern
+
+
 def test_poll_stop_latch_cleaned_on_marker_success(tmp_path):
     """Latch entry is cleaned up when marker-based detection succeeds."""
     workspace = tmp_path / "workspace"

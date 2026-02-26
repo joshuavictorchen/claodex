@@ -1,5 +1,48 @@
 # changelog
 
+## 2026-02-26 — fix stop-event fallback returning stale assistant text
+
+**problem**: agent-initiated `[COLLAB]` detection silently failed. the idle
+poll detected a response but reported 90 words instead of the expected 227 —
+missing the `[COLLAB]` signal on the last line. the response was consumed
+(watch deleted, latch cleared), so the signal was permanently lost.
+
+**root cause**: the stop-event fallback in `poll_for_response` (and
+`wait_for_response`) races against JSONL flushes. claude code writes the
+debug-log Stop event before the final assistant text block is flushed to the
+session JSONL. when the fallback fires, `_latest_assistant_message_between`
+returns whichever assistant text is on disk — which can be an intermediate
+frame from before a tool call, not the final response. in the observed case,
+a 90-word "running tests" text appeared before a `tool_result` boundary, while
+the 227-word response with `[COLLAB]` hadn't been flushed yet (32ms gap
+between generation timestamp and Stop event).
+
+**solution**: replaced `_latest_assistant_message_between` with a new
+boundary-aware extractor `_latest_claude_stop_fallback_message_between` for
+both `wait_for_response` and `poll_for_response` stop-event paths. the new
+method treats every user row (including `tool_result` rows) as a boundary that
+resets the "latest assistant text" accumulator. if the final assistant text
+hasn't been flushed past the last boundary, the method returns `None` and the
+stop-event latch survives to the next poll cycle.
+
+additional fixes:
+- entry-level `isSidechain` / `isMeta` rows are skipped, consistent with the
+  primary extraction path in `extract.py`
+- shared claude parsing helpers (`_extract_claude_assistant_text`,
+  `_extract_claude_user_text`, `_is_tool_result_only_claude_user_entry`) moved
+  to `extract.py` and imported by `router.py`, eliminating duplication
+- `_extract_claude_room_events` now uses the shared assistant text helper
+
+**residual risk**: if claude emits consecutive text-only assistant frames with
+no intervening user boundary and the stop event fires before the last one is
+flushed, the earlier frame would still be returned. this pattern has not been
+observed in practice.
+
+files changed: `claodex/router.py`, `claodex/extract.py`,
+`tests/test_router.py`
+
+verified: `PYTHONPATH=. pytest -q` → 201 passed
+
 ## 2026-02-26 — fix missing user context in routed collab messages
 
 **problem**: when a user sent messages to an agent and that agent responded

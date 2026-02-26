@@ -360,21 +360,7 @@ def _extract_claude_room_events(entries: list[dict]) -> list[dict]:
 
         if not timestamp:
             continue
-        content = message.get("content")
-        if not isinstance(content, list):
-            continue
-
-        text_fragments: list[str] = []
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") != "text":
-                continue
-            text_value = block.get("text")
-            if isinstance(text_value, str):
-                text_fragments.append(text_value)
-
-        frame_text = "\n".join(text_fragments)
+        frame_text = _extract_claude_assistant_text(message.get("content"))
         if frame_text.strip():
             # final non-empty assistant frame in each turn wins
             pending_assistant_event = {
@@ -497,6 +483,30 @@ def _extract_claude_user_text(content: object) -> str:
                 text_fragments.append(text_value)
         return "\n".join(text_fragments)
     return ""
+
+
+def _extract_claude_assistant_text(content: object) -> str:
+    """Extract assistant text from Claude message content.
+
+    Args:
+        content: Claude assistant message content payload.
+
+    Returns:
+        Extracted assistant text.
+    """
+    if not isinstance(content, list):
+        return ""
+
+    text_fragments: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "text":
+            continue
+        text_value = block.get("text")
+        if isinstance(text_value, str):
+            text_fragments.append(text_value)
+    return "\n".join(text_fragments)
 
 
 def _is_tool_result_only_claude_user_entry(message: dict) -> bool:
