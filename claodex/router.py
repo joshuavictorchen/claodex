@@ -243,6 +243,10 @@ class Router:
             if sender.startswith("user-"):
                 sender = "user"
                 body = strip_injected_context(body)
+                if not body.strip():
+                    # routed payload echoes without a user block carry no
+                    # user event and must not become empty routed blocks
+                    continue
                 if _is_meta_user_text(body):
                     continue
             events.append(
@@ -1127,7 +1131,8 @@ def strip_injected_context(message: str) -> str:
 
     Returns:
         Most recent `user` block when a message follows claodex block shape,
-        otherwise the original message.
+        empty string when headers are present with no `user` block, otherwise
+        the original message.
     """
     text = message.strip()
     if not text.startswith("---"):
@@ -1164,7 +1169,10 @@ def strip_injected_context(message: str) -> str:
         body = "\n".join(body_lines).strip()
         if body:
             return body
-    return message
+    # message has valid claodex headers but no user block — this is a routed
+    # collab payload with no user content to extract.  returning empty lets
+    # callers filter it out instead of nesting it inside another user header.
+    return ""
 
 
 def count_words(text: str) -> int:

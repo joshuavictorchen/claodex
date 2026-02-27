@@ -452,6 +452,8 @@ Injected messages (with `--- agent ---` headers) appear in the target's JSONL
 as user messages. When later extracted as delta for the other agent, the CLI
 SHOULD strip previously-injected headers, retaining only the final
 `--- user ---` block as the user event.
+If the final `--- user ---` block is missing or its body is empty/whitespace,
+the row MUST NOT be emitted as a deliverable user event.
 
 ## Collaboration Mode
 

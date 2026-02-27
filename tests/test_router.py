@@ -361,6 +361,16 @@ final instruction
     assert strip_injected_context(message) == "final instruction"
 
 
+def test_strip_injected_context_no_user_block_returns_empty():
+    message = """--- claude ---
+analysis
+
+--- codex ---
+counterpoint
+"""
+    assert strip_injected_context(message) == ""
+
+
 def test_send_user_message_includes_peer_delta_and_advances_delivery_cursor(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -738,6 +748,53 @@ final instruction""",
     assert len(sent_messages) == 1
     assert sent_messages[0].startswith("--- user ---\nfinal instruction")
     assert "--- codex ---\nprior analysis" not in sent_messages[0]
+
+
+def test_send_routed_message_ignores_header_only_echoed_user_row(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    _write_jsonl(claude_session, _claude_entries("ack", "ack"))
+    _write_jsonl(
+        codex_session,
+        _codex_entries(
+            """--- claude ---
+first response""",
+            "codex analysis",
+        ),
+    )
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 2)
+    write_read_cursor(workspace, "codex", 3)
+    # delivery cursor before codex user row and assistant row
+    write_delivery_cursor(workspace, "claude", 1)
+    write_delivery_cursor(workspace, "codex", 2)
+
+    sent_messages: list[str] = []
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: sent_messages.append(content),
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=5),
+    )
+
+    router.send_routed_message(
+        target_agent="claude",
+        source_agent="codex",
+        response_text="codex analysis",
+        echoed_user_anchor="--- claude ---\nfirst response",
+    )
+
+    assert len(sent_messages) == 1
+    payload = sent_messages[0]
+    assert payload == "--- codex ---\ncodex analysis"
+    assert "--- user ---" not in payload
 
 
 def test_send_routed_message_drops_echoed_routed_user_row(tmp_path):
