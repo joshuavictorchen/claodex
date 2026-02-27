@@ -158,7 +158,9 @@ class Router:
             self._stuck_state.pop(source_agent, None)
             return cursor
 
-        delta_lines = read_lines_between(participant.session_file, start_line=cursor, end_line=line_count)
+        delta_lines = read_lines_between(
+            participant.session_file, start_line=cursor, end_line=line_count
+        )
         extraction = extract_room_events_from_window(
             source=source_agent,
             delta_lines=delta_lines,
@@ -178,7 +180,10 @@ class Router:
             self._stuck_state[source_agent] = previous
 
             elapsed = now - previous.started_at
-            if previous.attempts >= STUCK_SKIP_ATTEMPTS or elapsed >= STUCK_SKIP_SECONDS:
+            if (
+                previous.attempts >= STUCK_SKIP_ATTEMPTS
+                or elapsed >= STUCK_SKIP_SECONDS
+            ):
                 skipped_cursor = min(cursor + 1, line_count)
                 write_read_cursor(self.workspace_root, source_agent, skipped_cursor)
                 self._stuck_state.pop(source_agent, None)
@@ -201,7 +206,9 @@ class Router:
         if self._warning_callback is not None:
             self._warning_callback(message)
 
-    def _extract_events_between(self, source_agent: str, start_line: int, end_line: int) -> list[dict]:
+    def _extract_events_between(
+        self, source_agent: str, start_line: int, end_line: int
+    ) -> list[dict]:
         """Extract normalized events for a line range.
 
         Args:
@@ -236,6 +243,8 @@ class Router:
             if sender.startswith("user-"):
                 sender = "user"
                 body = strip_injected_context(body)
+                if _is_meta_user_text(body):
+                    continue
             events.append(
                 {
                     "from": sender,
@@ -347,7 +356,9 @@ class Router:
         sent_at = datetime.now(timezone.utc)
         self._paste_content(target.tmux_pane, payload)
         if new_delivery_cursor is not None:
-            write_delivery_cursor(self.workspace_root, target_agent, new_delivery_cursor)
+            write_delivery_cursor(
+                self.workspace_root, target_agent, new_delivery_cursor
+            )
         return PendingSend(
             target_agent=target_agent,
             before_cursor=before_cursor,
@@ -393,14 +404,25 @@ class Router:
             if echoed_user_body:
                 normalized_echoed_user_anchor = _normalize_for_anchor(echoed_user_body)
 
-        # include undelivered user rows from the source log, but skip source
-        # assistant rows because response_text already forwards that response
+        # include undelivered rows from the source log. If the source's latest
+        # delta assistant row is the response we're routing right now, suppress
+        # that one row to avoid duplicating it in the payload.
+        suppressed_source_index: int | None = None
+        normalized_response_text = _normalize_for_anchor(response_text)
+        for index in range(len(delta_events) - 1, -1, -1):
+            event = delta_events[index]
+            if event["from"] != source_agent:
+                continue
+            if _normalize_for_anchor(event["body"]) == normalized_response_text:
+                suppressed_source_index = index
+            break
+
         blocks: list[tuple[str, str]] = []
         echo_dropped = False
-        for event in delta_events:
+        for index, event in enumerate(delta_events):
             sender = event["from"]
             body = event["body"]
-            if sender == source_agent:
+            if suppressed_source_index is not None and index == suppressed_source_index:
                 continue
             if (
                 not echo_dropped
@@ -482,7 +504,9 @@ class Router:
                     end_line=current_cursor,
                 )
                 marker_scan_cursor = current_cursor
-                saw_codex_task_started = saw_codex_task_started or turn_end.saw_codex_task_started
+                saw_codex_task_started = (
+                    saw_codex_task_started or turn_end.saw_codex_task_started
+                )
 
                 if turn_end.marker_line is not None:
                     assistant_text = self._latest_assistant_message_between(
@@ -554,7 +578,9 @@ class Router:
                 start_line=pending.before_cursor,
                 end_line=observed_cursor,
             )
-            saw_assistant_output = any(event["from"] == target_agent for event in events)
+            saw_assistant_output = any(
+                event["from"] == target_agent for event in events
+            )
 
         timeout_text = f"{timeout:g}s"
         if target_agent == "codex" and saw_codex_task_started:
@@ -686,7 +712,9 @@ class Router:
                 start_line=start_line,
                 end_line=end_line,
             )
-        raise ClaodexError(f"validation error: unsupported target agent: {target_agent}")
+        raise ClaodexError(
+            f"validation error: unsupported target agent: {target_agent}"
+        )
 
     def _scan_codex_turn_end_marker(
         self,
@@ -706,7 +734,9 @@ class Router:
         """
         saw_started = False
         first_complete_without_started: int | None = None
-        lines = read_lines_between(participant.session_file, start_line=start_line, end_line=end_line)
+        lines = read_lines_between(
+            participant.session_file, start_line=start_line, end_line=end_line
+        )
         for offset, raw_line in enumerate(lines, start=1):
             absolute_line = start_line + offset
             raw_line = raw_line.strip()
@@ -730,7 +760,9 @@ class Router:
                 saw_started = True
             elif marker == "task_complete":
                 if saw_started:
-                    return TurnEndScan(marker_line=absolute_line, saw_codex_task_started=True)
+                    return TurnEndScan(
+                        marker_line=absolute_line, saw_codex_task_started=True
+                    )
                 if first_complete_without_started is None:
                     first_complete_without_started = absolute_line
 
@@ -760,7 +792,9 @@ class Router:
         Returns:
             Scan result. Marker line is the first `turn_duration` in the window.
         """
-        lines = read_lines_between(participant.session_file, start_line=start_line, end_line=end_line)
+        lines = read_lines_between(
+            participant.session_file, start_line=start_line, end_line=end_line
+        )
         for offset, raw_line in enumerate(lines, start=1):
             absolute_line = start_line + offset
             raw_line = raw_line.strip()
@@ -831,7 +865,9 @@ class Router:
             if match is None:
                 continue
             try:
-                event_time = datetime.fromisoformat(match.group(1).replace("Z", "+00:00"))
+                event_time = datetime.fromisoformat(
+                    match.group(1).replace("Z", "+00:00")
+                )
             except ValueError:
                 continue
             if event_time >= send_time:
@@ -1016,7 +1052,9 @@ class Router:
             return "event_msg.payload.type=task_complete"
         if target_agent == "claude":
             return "system.subtype=turn_duration or debug-log Stop event"
-        raise ClaodexError(f"validation error: unsupported target agent: {target_agent}")
+        raise ClaodexError(
+            f"validation error: unsupported target agent: {target_agent}"
+        )
 
     def _ensure_target_alive(self, participant: Participant) -> None:
         """Fail fast if a target pane is dead.
@@ -1025,7 +1063,9 @@ class Router:
             participant: Participant metadata.
         """
         if not self._pane_alive(participant.tmux_pane):
-            raise ClaodexError(f"target pane is not alive: {participant.agent} ({participant.tmux_pane})")
+            raise ClaodexError(
+                f"target pane is not alive: {participant.agent} ({participant.tmux_pane})"
+            )
 
 
 def _normalize_for_anchor(text: str) -> str:

@@ -93,7 +93,12 @@ def _claude_tool_entries(tool_complete: bool) -> list[dict]:
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "running tests now"},
-                    {"type": "tool_use", "id": "tool-1", "name": "Bash", "input": {"cmd": "pytest"}},
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "Bash",
+                        "input": {"cmd": "pytest"},
+                    },
                 ],
             },
         },
@@ -107,7 +112,13 @@ def _claude_tool_entries(tool_complete: bool) -> list[dict]:
                     "sessionId": "claude-session",
                     "message": {
                         "role": "user",
-                        "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": "ok"}],
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "tool-1",
+                                "content": "ok",
+                            }
+                        ],
                     },
                 },
                 {
@@ -204,7 +215,9 @@ def _codex_turn_entries(
     return entries
 
 
-def _participants(workspace: Path, claude_session: Path, codex_session: Path) -> SessionParticipants:
+def _participants(
+    workspace: Path, claude_session: Path, codex_session: Path
+) -> SessionParticipants:
     return SessionParticipants(
         claude=Participant(
             agent="claude",
@@ -227,7 +240,7 @@ def _participants(workspace: Path, claude_session: Path, codex_session: Path) ->
 
 def test_parse_collab_request_defaults():
     parsed = parse_collab_request("/collab design api", default_start="claude")
-    assert parsed.turns == 500
+    assert parsed.turns == 100
     assert parsed.start_agent == "claude"
     assert parsed.message == "design api"
 
@@ -275,7 +288,9 @@ def test_parse_collab_request_rejects_unknown_option():
 
 
 def test_parse_collab_request_double_dash_terminates_options():
-    parsed = parse_collab_request("/collab --turns 2 -- --this starts with dashes", default_start="claude")
+    parsed = parse_collab_request(
+        "/collab --turns 2 -- --this starts with dashes", default_start="claude"
+    )
     assert parsed.turns == 2
     assert parsed.message == "--this starts with dashes"
 
@@ -378,7 +393,72 @@ def test_send_user_message_includes_peer_delta_and_advances_delivery_cursor(tmp_
     assert "--- user ---\ntask" in sent_messages[0]
     assert "--- claude ---\ndone" in sent_messages[0]
     assert sent_messages[0].endswith("--- user ---\nplease review")
-    assert read_delivery_cursor(workspace, "codex") == read_read_cursor(workspace, "claude")
+    assert read_delivery_cursor(workspace, "codex") == read_read_cursor(
+        workspace, "claude"
+    )
+
+
+def test_send_user_message_filters_meta_user_rows_from_peer_delta(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    _write_jsonl(
+        claude_session,
+        [
+            {
+                "timestamp": "2026-02-22T10:00:00Z",
+                "type": "user",
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "user",
+                    "content": "<system-reminder>hidden</system-reminder>",
+                },
+            },
+            {
+                "timestamp": "2026-02-22T10:00:01Z",
+                "type": "user",
+                "sessionId": "claude-session",
+                "message": {"role": "user", "content": "real question"},
+            },
+            {
+                "timestamp": "2026-02-22T10:00:02Z",
+                "type": "assistant",
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "real answer"}],
+                },
+            },
+        ],
+    )
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    sent_messages: list[str] = []
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: sent_messages.append(content),
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.05, turn_timeout_seconds=5),
+    )
+
+    router.send_user_message("codex", "please review")
+
+    assert len(sent_messages) == 1
+    payload = sent_messages[0]
+    assert "--- user ---\nreal question" in payload
+    assert "--- claude ---\nreal answer" in payload
+    assert "<system-reminder>hidden</system-reminder>" not in payload
+    assert payload.endswith("--- user ---\nplease review")
 
 
 def test_send_user_message_to_peer_does_not_redeliver_stacked_user_rows(tmp_path):
@@ -443,7 +523,9 @@ def test_send_user_message_to_peer_does_not_redeliver_stacked_user_rows(tmp_path
     assert payload.endswith("--- user ---\nfollow-up")
 
 
-def test_send_user_message_to_peer_after_halt_responder_first_keeps_full_context(tmp_path):
+def test_send_user_message_to_peer_after_halt_responder_first_keeps_full_context(
+    tmp_path,
+):
     """Peer receives unrouted final response plus responder-first post-halt exchange."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -478,7 +560,9 @@ def test_send_user_message_to_peer_after_halt_responder_first_keeps_full_context
                 "sessionId": "claude-session",
                 "message": {
                     "role": "assistant",
-                    "content": [{"type": "text", "text": "A reply to first post-halt message"}],
+                    "content": [
+                        {"type": "text", "text": "A reply to first post-halt message"}
+                    ],
                 },
             },
         ],
@@ -558,7 +642,7 @@ def test_send_user_message_stamps_sent_at_before_paste(tmp_path):
 
 
 def test_send_routed_message_orders_interjections_chronologically(tmp_path):
-    """Payload order: delta user rows, interjections, peer response."""
+    """Payload order: delta rows, interjections, peer response."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     ensure_state_layout(workspace)
@@ -593,17 +677,20 @@ def test_send_routed_message_orders_interjections_chronologically(tmp_path):
 
     assert len(sent_messages) == 1
     payload = sent_messages[0]
-    # chronological: delta user row ("task") < interjections < peer response
+    # chronological: prior delta rows ("task", "done") < interjections < peer response
     assert payload.startswith("--- user ---\ntask")
     assert payload.count("--- user ---") == 3
     task_pos = payload.index("--- user ---\ntask")
+    done_pos = payload.index("--- claude ---\ndone")
     q1_pos = payload.index("--- user ---\nquestion one")
     q2_pos = payload.index("--- user ---\nquestion two")
     peer_pos = payload.index("--- claude ---\npeer response")
-    assert task_pos < q1_pos < q2_pos < peer_pos
+    assert task_pos < done_pos < q1_pos < q2_pos < peer_pos
     assert payload.endswith("--- claude ---\npeer response")
-    assert "--- claude ---\ndone" not in payload
-    assert read_delivery_cursor(workspace, "codex") == read_read_cursor(workspace, "claude")
+    assert payload.count("--- claude ---\ndone") == 1
+    assert read_delivery_cursor(workspace, "codex") == read_read_cursor(
+        workspace, "claude"
+    )
 
 
 def test_send_routed_message_strips_injected_headers_from_delta_user_rows(tmp_path):
@@ -692,8 +779,12 @@ first response"""
     )
 
     assert len(sent_messages) == 1
-    assert sent_messages[0] == "--- codex ---\nnext routed response"
-    assert "--- user ---\noriginal request" not in sent_messages[0]
+    payload = sent_messages[0]
+    assert "--- user ---\noriginal request" not in payload
+    assert (
+        payload
+        == "--- codex ---\ncodex analysis\n\n--- codex ---\nnext routed response"
+    )
 
 
 def test_send_routed_message_dedupes_only_first_echoed_user_row(tmp_path):
@@ -799,8 +890,12 @@ def test_sync_delivery_cursors_aligns_to_peer_read_positions(tmp_path):
 
     router.sync_delivery_cursors()
 
-    assert read_delivery_cursor(workspace, "claude") == read_read_cursor(workspace, "codex")
-    assert read_delivery_cursor(workspace, "codex") == read_read_cursor(workspace, "claude")
+    assert read_delivery_cursor(workspace, "claude") == read_read_cursor(
+        workspace, "codex"
+    )
+    assert read_delivery_cursor(workspace, "codex") == read_read_cursor(
+        workspace, "claude"
+    )
     assert read_delivery_cursor(workspace, "claude") == 3
     assert read_delivery_cursor(workspace, "codex") == 2
 
@@ -922,7 +1017,9 @@ def test_wait_for_response_codex_requires_task_complete_when_started(tmp_path):
         config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
     )
 
-    pending = PendingSend(target_agent="codex", before_cursor=0, sent_text="--- user ---\nquestion")
+    pending = PendingSend(
+        target_agent="codex", before_cursor=0, sent_text="--- user ---\nquestion"
+    )
     with pytest.raises(ClaodexError, match="SMOKE SIGNAL: codex emitted task_started"):
         router.wait_for_response(pending=pending, timeout_seconds=0.2)
 
@@ -959,7 +1056,9 @@ def test_wait_for_response_codex_smoke_when_assistant_has_no_markers(tmp_path):
         config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
     )
 
-    pending = PendingSend(target_agent="codex", before_cursor=0, sent_text="--- user ---\nquestion")
+    pending = PendingSend(
+        target_agent="codex", before_cursor=0, sent_text="--- user ---\nquestion"
+    )
     with pytest.raises(
         ClaodexError,
         match="SMOKE SIGNAL: codex emitted assistant output but no event_msg.payload.type=task_complete marker",
@@ -999,7 +1098,9 @@ def test_wait_for_response_codex_accepts_task_complete(tmp_path):
         config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
     )
 
-    pending = PendingSend(target_agent="codex", before_cursor=0, sent_text="--- user ---\nquestion")
+    pending = PendingSend(
+        target_agent="codex", before_cursor=0, sent_text="--- user ---\nquestion"
+    )
     response = router.wait_for_response(pending=pending, timeout_seconds=0.5)
     assert response.agent == "codex"
     assert response.text == "final response"
@@ -1076,7 +1177,9 @@ def test_wait_for_response_codex_ignores_pre_start_task_complete(tmp_path):
         config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
     )
 
-    pending = PendingSend(target_agent="codex", before_cursor=0, sent_text="--- user ---\nnew question")
+    pending = PendingSend(
+        target_agent="codex", before_cursor=0, sent_text="--- user ---\nnew question"
+    )
     with pytest.raises(ClaodexError, match="SMOKE SIGNAL: codex emitted task_started"):
         router.wait_for_response(pending=pending, timeout_seconds=0.2)
 
@@ -1105,7 +1208,9 @@ def test_wait_for_response_claude_waits_for_tool_completion(tmp_path):
         config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
     )
 
-    pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nrun checks")
+    pending = PendingSend(
+        target_agent="claude", before_cursor=0, sent_text="--- user ---\nrun checks"
+    )
     with pytest.raises(
         ClaodexError,
         match="SMOKE SIGNAL: claude emitted assistant output but no system.subtype=turn_duration or debug-log Stop event marker",
@@ -1137,7 +1242,9 @@ def test_wait_for_response_claude_returns_after_tool_result(tmp_path):
         config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
     )
 
-    pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nrun checks")
+    pending = PendingSend(
+        target_agent="claude", before_cursor=0, sent_text="--- user ---\nrun checks"
+    )
     response = router.wait_for_response(pending=pending, timeout_seconds=0.5)
     assert response.agent == "claude"
     assert response.text == "tests passed"
@@ -1167,7 +1274,9 @@ def test_wait_for_response_claude_simple_turn_duration(tmp_path):
         config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
     )
 
-    pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\ndesign api")
+    pending = PendingSend(
+        target_agent="claude", before_cursor=0, sent_text="--- user ---\ndesign api"
+    )
     response = router.wait_for_response(pending=pending, timeout_seconds=0.5)
     assert response.agent == "claude"
     assert response.text == "simple answer"
@@ -1209,10 +1318,15 @@ def test_wait_for_response_claude_stop_event_fallback(tmp_path):
 
     # patch the debug log path to use our tmp file
     import claodex.router as router_module
+
     original_pattern = router_module.CLAUDE_DEBUG_LOG_PATTERN
-    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace("claude-session", "{session_id}")
+    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace(
+        "claude-session", "{session_id}"
+    )
     try:
-        pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello")
+        pending = PendingSend(
+            target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello"
+        )
         response = router.wait_for_response(pending=pending, timeout_seconds=2.0)
         assert response.agent == "claude"
         assert response.text == "hey there"
@@ -1264,10 +1378,15 @@ def test_wait_for_response_claude_stop_event_no_assistant_text(tmp_path):
     )
 
     import claodex.router as router_module
+
     original_pattern = router_module.CLAUDE_DEBUG_LOG_PATTERN
-    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace("claude-session", "{session_id}")
+    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace(
+        "claude-session", "{session_id}"
+    )
     try:
-        pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello")
+        pending = PendingSend(
+            target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello"
+        )
         with pytest.raises(ClaodexError, match="SMOKE SIGNAL"):
             router.wait_for_response(pending=pending, timeout_seconds=0.3)
     finally:
@@ -1308,10 +1427,15 @@ def test_wait_for_response_claude_stop_event_ignores_stale(tmp_path):
     )
 
     import claodex.router as router_module
+
     original_pattern = router_module.CLAUDE_DEBUG_LOG_PATTERN
-    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace("claude-session", "{session_id}")
+    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace(
+        "claude-session", "{session_id}"
+    )
     try:
-        pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello")
+        pending = PendingSend(
+            target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello"
+        )
         # stale Stop event should be ignored — timeout
         with pytest.raises(ClaodexError, match="SMOKE SIGNAL"):
             router.wait_for_response(pending=pending, timeout_seconds=0.3)
@@ -1352,8 +1476,11 @@ def test_wait_for_response_claude_stop_event_same_millisecond_as_send_time(tmp_p
     )
 
     import claodex.router as router_module
+
     original_pattern = router_module.CLAUDE_DEBUG_LOG_PATTERN
-    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace("claude-session", "{session_id}")
+    router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace(
+        "claude-session", "{session_id}"
+    )
     try:
         pending = PendingSend(
             target_agent="claude",
@@ -1420,7 +1547,9 @@ def test_wait_for_response_claude_interference_detection(tmp_path):
     )
 
     pending = PendingSend(
-        target_agent="claude", before_cursor=0, sent_text="--- codex ---\ncollab message"
+        target_agent="claude",
+        before_cursor=0,
+        sent_text="--- codex ---\ncollab message",
     )
     with pytest.raises(ClaodexError, match="interference detected"):
         router.wait_for_response(pending=pending, timeout_seconds=0.5)
@@ -1448,7 +1577,10 @@ def test_wait_for_response_claude_meta_rows_not_interference(tmp_path):
                 "timestamp": "2026-02-22T10:00:01Z",
                 "type": "user",
                 "sessionId": "claude-session",
-                "message": {"role": "user", "content": "<system-reminder>some context</system-reminder>"},
+                "message": {
+                    "role": "user",
+                    "content": "<system-reminder>some context</system-reminder>",
+                },
             },
             {
                 "timestamp": "2026-02-22T10:00:02Z",
@@ -1484,7 +1616,9 @@ def test_wait_for_response_claude_meta_rows_not_interference(tmp_path):
     )
 
     pending = PendingSend(
-        target_agent="claude", before_cursor=0, sent_text="--- codex ---\ncollab message"
+        target_agent="claude",
+        before_cursor=0,
+        sent_text="--- codex ---\ncollab message",
     )
     response = router.wait_for_response(pending=pending, timeout_seconds=1.0)
     assert response.agent == "claude"
@@ -1537,7 +1671,9 @@ def test_wait_for_response_claude_interference_wrong_first_row(tmp_path):
     )
 
     pending = PendingSend(
-        target_agent="claude", before_cursor=0, sent_text="--- codex ---\ncollab message"
+        target_agent="claude",
+        before_cursor=0,
+        sent_text="--- codex ---\ncollab message",
     )
     with pytest.raises(ClaodexError, match="interference detected"):
         router.wait_for_response(pending=pending, timeout_seconds=0.5)
@@ -1572,7 +1708,9 @@ def test_poll_for_response_returns_none_when_incomplete(tmp_path):
         config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
     )
 
-    pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello")
+    pending = PendingSend(
+        target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello"
+    )
     result = router.poll_for_response(pending)
     assert result is None
 
@@ -1602,7 +1740,9 @@ def test_poll_for_response_returns_response_when_complete(tmp_path):
         config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
     )
 
-    pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello")
+    pending = PendingSend(
+        target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello"
+    )
     result = router.poll_for_response(pending)
     assert result is not None
     assert result.agent == "claude"
@@ -1634,7 +1774,9 @@ def test_poll_for_response_returns_none_when_pane_dead(tmp_path):
         config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
     )
 
-    pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello")
+    pending = PendingSend(
+        target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello"
+    )
     result = router.poll_for_response(pending)
     assert result is None
 
@@ -1676,6 +1818,7 @@ def test_poll_for_response_stop_event_latch_survives_across_polls(tmp_path):
 
     # patch the debug log path to use our tmp file
     import claodex.router as router_module
+
     original_pattern = router_module.CLAUDE_DEBUG_LOG_PATTERN
     router_module.CLAUDE_DEBUG_LOG_PATTERN = str(debug_log).replace(
         "claude-session", "{session_id}"
@@ -1847,7 +1990,12 @@ def test_poll_for_response_stop_event_ignores_meta_and_sidechain_entries(tmp_pat
                     "role": "assistant",
                     "content": [
                         {"type": "text", "text": "running tests now"},
-                        {"type": "tool_use", "id": "tool-1", "name": "Bash", "input": {"cmd": "pytest"}},
+                        {
+                            "type": "tool_use",
+                            "id": "tool-1",
+                            "name": "Bash",
+                            "input": {"cmd": "pytest"},
+                        },
                     ],
                 },
             },
@@ -1857,7 +2005,13 @@ def test_poll_for_response_stop_event_ignores_meta_and_sidechain_entries(tmp_pat
                 "sessionId": "claude-session",
                 "message": {
                     "role": "user",
-                    "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": "ok"}],
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tool-1",
+                            "content": "ok",
+                        }
+                    ],
                 },
             },
             {
@@ -1958,7 +2112,9 @@ def test_poll_stop_latch_cleaned_on_marker_success(tmp_path):
     # pre-seed a latch entry to verify it gets cleaned up
     router._poll_stop_seen.add(("claude", 0))
 
-    pending = PendingSend(target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello")
+    pending = PendingSend(
+        target_agent="claude", before_cursor=0, sent_text="--- user ---\nhello"
+    )
     result = router.poll_for_response(pending)
     assert result is not None
     assert result.text == "world"

@@ -847,6 +847,13 @@ second
 
 ---
 
+**note (rapid switch timing)**: If a user switches targets before the prior
+send is persisted to the source JSONL, the newest source-side rows MAY appear
+on the next send instead of immediately. Delivery remains exactly-once and in
+source-log order.
+
+---
+
 #### N6. Send to A, switch to B before A responds
 
 > User sends to A, then immediately switches and sends to B. A has not
