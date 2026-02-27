@@ -1,4 +1,4 @@
-Last updated: 2026-02-26 (rev6)
+Last updated: 2026-02-26 (rev7)
 
 ## Overview
 
@@ -192,18 +192,18 @@ State on disk:
 | Symbol | Location |
 | --- | --- |
 | `ClaodexApplication` | `claodex/cli.py:133` |
-| `Router` | `claodex/router.py:97` |
+| `Router` | `claodex/router.py:101` |
 | `extract_room_events_from_window` | `claodex/extract.py:193` |
 | `verify_prefill` | `claodex/tmux_ops.py:266` |
-| `paste_content` | `claodex/tmux_ops.py:395` |
-| `_submit_delay` | `claodex/tmux_ops.py:359` |
-| `render_block` | `claodex/router.py:936` |
-| `strip_injected_context` | `claodex/router.py:952` |
+| `paste_content` | `claodex/tmux_ops.py:402` |
+| `_submit_delay` | `claodex/tmux_ops.py:366` |
+| `render_block` | `claodex/router.py:1106` |
+| `strip_injected_context` | `claodex/router.py:1122` |
 | `InputEditor` | `claodex/input_editor.py:71` |
 | `Participant` | `claodex/state.py:28` |
 | `register.py:main` | `claodex/skill/scripts/register.py:350` |
-| `clear_poll_latch` | `claodex/router.py:582` |
-| `HEADER_LINE_PATTERN` | `claodex/router.py:46` |
+| `clear_poll_latch` | `claodex/router.py:676` |
+| `HEADER_LINE_PATTERN` | `claodex/router.py:50` |
 
 ## Known Gotchas
 

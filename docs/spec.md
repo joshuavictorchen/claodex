@@ -831,8 +831,8 @@ A does NOT see its own prior exchange echoed back.
 2. (A still thinking)
 3. `A ❯ second`
 
-**A sees**: each message delivered separately as it is submitted. both appear
-as individual `--- user ---` blocks in A's context. no delta (B was not
+**A sees**: Each message delivered separately as it is submitted. Both appear
+as individual `--- user ---` blocks in A's context. No delta (B was not
 addressed).
 
 ```
@@ -993,7 +993,7 @@ when A eventually responds, that response may address both `task` and
 
 #### N11. Rapid alternation: A, B, A, B
 
-> User alternates between agents. each receives the other's exchange as delta.
+> User alternates between agents. Each receives the other's exchange as delta.
 
 **input pane**:
 1. `A ❯ m1`
@@ -1094,7 +1094,7 @@ on step 3).
 
 #### C1. Basic collab exchange
 
-> User starts a collab targeting A. agents alternate turns.
+> User starts a collab targeting A. Agents alternate turns.
 
 **input pane**:
 1. `A ❯ /collab discuss the API`
@@ -1117,7 +1117,7 @@ discuss the API
 ```
 
 B receives the user's original message alongside A's response.
-on subsequent routed turns, each agent sees only content it has not already
+On subsequent routed turns, each agent sees only content it has not already
 received.
 
 **turn 3 — A sees**:
@@ -1148,7 +1148,7 @@ important note
 ```
 
 Interjections appear before the peer response (chronological order: the user
-typed during the turn, the response completed after). interjections are
+typed during the turn, the response completed after). Interjections are
 replayed to the other agent on the following turn so both agents see them.
 
 **following routed turn — A sees**:
@@ -1184,7 +1184,7 @@ second note
 ```
 
 Multiple interjections each get their own `--- user ---` block, all placed
-before the peer response. ordering is chronological: all interjections first,
+before the peer response. Ordering is chronological: all interjections first,
 then the response.
 
 **following routed turn — A sees**:
@@ -1216,12 +1216,12 @@ second note
 [CONVERGED]
 ```
 
-**turn N+1 — B responds with `[CONVERGED]`**. collab stops. B's response
+**turn N+1 — B responds with `[CONVERGED]`**. Collab stops. B's response
 (including `[CONVERGED]`) is NOT routed to A during the collab — it appears as
 delta in A's next normal-mode message (same preservation as C4/C6).
 
-if only one agent signals `[CONVERGED]` and the peer does not, the signal is
-void. both MUST re-signal in consecutive turns.
+If only one agent signals `[CONVERGED]` and the peer does not, the signal is
+void. Both MUST re-signal in consecutive turns.
 
 ---
 
@@ -1229,7 +1229,7 @@ void. both MUST re-signal in consecutive turns.
 
 > Collab reaches the configured maximum turns.
 
-**behavior**: collab stops after the final response is received. the final
+**Behavior**: Collab stops after the final response is received. The final
 response is NOT routed to the peer during the collab — it is preserved as
 delta for the peer on the next normal-mode message (same preservation as
 C6/C8).
@@ -1268,17 +1268,17 @@ Collab continues from turn 2 as in C1.
 
 #### C6. `/halt` after one agent responds
 
-> A responds during collab. user types `/halt` before the response is routed
+> A responds during collab. User types `/halt` before the response is routed
 > to B.
 
 **input pane**:
 1. (collab active, A just responded)
 2. `/halt`
 
-**behavior**: collab stops. A's response was received but never delivered to B.
+**Behavior**: Collab stops. A's response was received but never delivered to B.
 
-**next normal-mode message → B**: A's unrouted response appears as delta so B
-does not miss it. if this is the first turn (nothing was ever routed to B),
+**Next normal-mode message → B**: A's unrouted response appears as delta so B
+does not miss it. If this is the first turn (nothing was ever routed to B),
 the original user message also appears as delta since B has never seen it:
 ```
 --- user ---
@@ -1293,11 +1293,11 @@ the original user message also appears as delta since B has never seen it:
 <user's new message>
 ```
 
-if the halt occurs after multiple routed turns, B already received earlier
-content. only A's final unrouted response appears as delta — not the full
+If the halt occurs after multiple routed turns, B already received earlier
+content. Only A's final unrouted response appears as delta — not the full
 history.
 
-**next normal-mode message → A**: no stale delta — A already received its own
+**Next normal-mode message → A**: No stale delta — A already received its own
 content.
 
 ---
@@ -1311,20 +1311,20 @@ content.
 2. (A still thinking)
 3. `/halt`
 
-**behavior**: the CLI waits for the current turn to complete or time out.
+**Behavior**: The CLI waits for the current turn to complete or time out.
 
-- if the agent responds before the halt is processed: same as C6 — the
+- If the agent responds before the halt is processed: same as C6 — the
   response is preserved for the peer.
-- if the wait is interrupted or times out: no response exists. both agents'
-  delivery state is synchronized. no content is lost because none was produced.
+- If the wait is interrupted or times out: no response exists. Both agents'
+  delivery state is synchronized. No content is lost because none was produced.
 
 ---
 
 #### C8. `/halt` mid-collab after multiple turns
 
-> Collab ran N turns successfully. agent A responds on turn N+1. user halts.
+> Collab ran N turns successfully. Agent A responds on turn N+1. User halts.
 
-**behavior**: all N routed turns were already delivered to both agents. only
+**Behavior**: All N routed turns were already delivered to both agents. Only
 A's final (unrouted) response on turn N+1 is affected — it is preserved as
 delta for B on the next normal-mode message (same as C6).
 
@@ -1336,10 +1336,10 @@ delta for B on the next normal-mode message (same as C6).
 
 > One agent's pane is killed during collab.
 
-**behavior**: collab aborts with an error and reports the dead agent.
-if a completed response was received but not routed when the abort occurred,
+**Behavior**: Collab aborts with an error and reports the dead agent.
+If a completed response was received but not routed when the abort occurred,
 that response is preserved for the peer's next normal-mode message.
-otherwise, no stale collab delta is injected.
+Otherwise, no stale collab delta is injected.
 
 ---
 
@@ -1347,10 +1347,10 @@ otherwise, no stale collab delta is injected.
 
 > An agent fails to respond within the timeout (default: 18000s).
 
-**behavior**: collab aborts with an error identifying which agent timed out.
-if a completed response was received but not routed when the abort occurred,
+**Behavior**: Collab aborts with an error identifying which agent timed out.
+If a completed response was received but not routed when the abort occurred,
 that response is preserved for the peer's next normal-mode message.
-otherwise, no stale collab delta is injected.
+Otherwise, no stale collab delta is injected.
 
 ---
 
@@ -1358,10 +1358,10 @@ otherwise, no stale collab delta is injected.
 
 #### PC1. Normal send to the peer after clean collab exit
 
-> Collab ended normally (convergence, turn limit). user sends to the agent
+> Collab ended normally (convergence, turn limit). User sends to the agent
 > that did NOT produce the final response.
 
-**behavior**: the final collab response was not routed during the collab. it
+**Behavior**: The final collab response was not routed during the collab. It
 appears as delta alongside the user's new message, so the peer sees the last
 thing the other agent said.
 
@@ -1369,37 +1369,37 @@ thing the other agent said.
 
 #### PC1b. Normal send to the responding agent after clean collab exit
 
-> Collab ended normally. user sends to the agent that DID produce the final
+> Collab ended normally. User sends to the agent that DID produce the final
 > response.
 
-**behavior**: no stale delta — that agent already has its own content. the
+**Behavior**: No stale delta — that agent already has its own content. The
 user's message is delivered normally with any new peer events.
 
 ---
 
 #### PC2. Normal send to the agent that missed the halt response
 
-> Collab was halted (C6/C8). user sends to the agent that didn't receive the
+> Collab was halted (C6/C8). User sends to the agent that didn't receive the
 > final response.
 
-**behavior**: the final collab response appears as delta alongside the user's
-new message. no content is lost. the `(collab halted by user)` prefix provides
+**Behavior**: The final collab response appears as delta alongside the user's
+new message. No content is lost. The `(collab halted by user)` prefix provides
 context.
 
 ---
 
 #### PC3. Normal send to the agent that DID respond before halt
 
-> Collab was halted. user sends to the agent that produced the final response.
+> Collab was halted. User sends to the agent that produced the final response.
 
-**behavior**: no stale delta — that agent already has its own content. the
+**Behavior**: No stale delta — that agent already has its own content. The
 user's message is delivered normally with any new peer events.
 
 ---
 
 #### PC4. Halted collab: send to responder first, then to peer
 
-> Collab was halted after A produced an unrouted final response. user first
+> Collab was halted after A produced an unrouted final response. User first
 > sends to A, A replies, then user sends to B.
 
 **input pane**:
@@ -1433,10 +1433,10 @@ responding agent before the peer.
 
 #### E1. Duplicate user messages
 
-> User sends the exact same message text twice to A. both are extracted as
+> User sends the exact same message text twice to A. Both are extracted as
 > delta for B.
 
-**behavior**: both messages are delivered as separate user blocks in order.
+**Behavior**: Both messages are delivered as separate user blocks in order.
 
 ---
 
@@ -1445,7 +1445,7 @@ responding agent before the peer.
 > Agent runtime injects meta content (system reminders, command wrappers,
 > task notifications) as user rows.
 
-**behavior**: meta rows are not extracted as deliverable events. they are
+**Behavior**: Meta rows are not extracted as deliverable events. They are
 invisible to the peer agent.
 
 ---
@@ -1454,8 +1454,8 @@ invisible to the peer agent.
 
 > An agent's log contains unparseable lines.
 
-**behavior**: after repeated failures (3 attempts or 10 seconds), the
-malformed line is skipped with a warning. subsequent lines are processed
+**Behavior**: After repeated failures (3 attempts or 10 seconds), the
+malformed line is skipped with a warning. Subsequent lines are processed
 normally.
 
 ---
@@ -1465,10 +1465,10 @@ normally.
 > User halts collab, then sends to the agent that missed content (B), then
 > sends to the other (A).
 
-**B sees**: collab content as delta (preserved from halt), plus user's message.
+**B sees**: Collab content as delta (preserved from halt), plus user's message.
 
 **A sees** (after B responds): B's new exchange as delta, plus user's message.
-no collab content is re-delivered to A.
+No collab content is re-delivered to A.
 
 ---
 
