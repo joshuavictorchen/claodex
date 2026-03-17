@@ -482,9 +482,12 @@ the row MUST NOT be emitted as a deliverable user event.
 appears in the scan window, require a subsequent `task_complete` (prevents
 stale marker matching).
 
-**Claude** (priority order):
+**Claude** (priority order — first match in the scan window wins):
 
-1. **Fast path**: `system.subtype == "turn_duration"` in JSONL.
+1. **In-band markers** (checked per JSONL line in source order):
+   - `system.subtype == "turn_duration"`
+   - `assistant.message.stop_reason == "end_turn"` on non-sidechain,
+     non-meta entries
 2. **Stop-event fallback**: `Getting matching hook commands for Stop` in
    Claude debug log (`~/.claude/debug/{session_id}.txt`) with timestamp
    after send time, plus extractable assistant text.

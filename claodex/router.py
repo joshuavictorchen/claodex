@@ -786,7 +786,11 @@ class Router:
         start_line: int,
         end_line: int,
     ) -> TurnEndScan:
-        """Scan a Claude line window for `system.turn_duration`.
+        """Scan a Claude line window for a turn-end marker.
+
+        Checks for two markers in source order and returns the first match:
+        1. assistant entry with stop_reason == "end_turn" (v2.1.77+)
+        2. system entry with subtype == "turn_duration" (v2.1.61 and earlier)
 
         Args:
             participant: Claude participant metadata.
@@ -794,7 +798,7 @@ class Router:
             end_line: Ending cursor (inclusive).
 
         Returns:
-            Scan result. Marker line is the first `turn_duration` in the window.
+            Scan result. Marker line is the first turn-end marker in the window.
         """
         lines = read_lines_between(
             participant.session_file, start_line=start_line, end_line=end_line
@@ -810,11 +814,22 @@ class Router:
                 continue
             if not isinstance(entry, dict):
                 continue
-            if entry.get("type") != "system":
+
+            # legacy marker: system.turn_duration (Claude Code <= v2.1.61)
+            if (
+                entry.get("type") == "system"
+                and entry.get("subtype") == "turn_duration"
+            ):
+                return TurnEndScan(marker_line=absolute_line)
+
+            # new marker: assistant stop_reason == "end_turn" (Claude Code >= v2.1.77)
+            if entry.get("isSidechain") or entry.get("isMeta"):
                 continue
-            if entry.get("subtype") != "turn_duration":
-                continue
-            return TurnEndScan(marker_line=absolute_line)
+            if entry.get("type") == "assistant":
+                message = entry.get("message", {})
+                if isinstance(message, dict) and message.get("stop_reason") == "end_turn":
+                    return TurnEndScan(marker_line=absolute_line)
+
         return TurnEndScan(marker_line=None)
 
     def _scan_claude_debug_stop_event(
@@ -1055,7 +1070,7 @@ class Router:
         if target_agent == "codex":
             return "event_msg.payload.type=task_complete"
         if target_agent == "claude":
-            return "system.subtype=turn_duration or debug-log Stop event"
+            return "assistant.stop_reason=end_turn, system.subtype=turn_duration, or debug-log Stop event"
         raise ClaodexError(
             f"validation error: unsupported target agent: {target_agent}"
         )

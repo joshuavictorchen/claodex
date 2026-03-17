@@ -1270,7 +1270,7 @@ def test_wait_for_response_claude_waits_for_tool_completion(tmp_path):
     )
     with pytest.raises(
         ClaodexError,
-        match="SMOKE SIGNAL: claude emitted assistant output but no system.subtype=turn_duration or debug-log Stop event marker",
+        match="SMOKE SIGNAL: claude emitted assistant output but no assistant.stop_reason=end_turn, system.subtype=turn_duration, or debug-log Stop event marker",
     ):
         router.wait_for_response(pending=pending, timeout_seconds=0.2)
 
@@ -1337,6 +1337,115 @@ def test_wait_for_response_claude_simple_turn_duration(tmp_path):
     response = router.wait_for_response(pending=pending, timeout_seconds=0.5)
     assert response.agent == "claude"
     assert response.text == "simple answer"
+
+
+def test_wait_for_response_claude_end_turn_stop_reason(tmp_path):
+    """Claude turn detected via assistant stop_reason=end_turn (v2.1.77+ format)."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    # no turn_duration entry — only stop_reason: "end_turn" on the assistant
+    _write_jsonl(
+        claude_session,
+        [
+            {
+                "timestamp": "2026-02-22T10:00:00Z",
+                "type": "user",
+                "sessionId": "claude-session",
+                "message": {"role": "user", "content": "design api"},
+            },
+            {
+                "timestamp": "2026-02-22T10:00:01Z",
+                "type": "assistant",
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "here is the design"}],
+                    "stop_reason": "end_turn",
+                },
+            },
+        ],
+    )
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
+    )
+
+    pending = PendingSend(
+        target_agent="claude", before_cursor=0, sent_text="--- user ---\ndesign api"
+    )
+    response = router.wait_for_response(pending=pending, timeout_seconds=0.5)
+    assert response.agent == "claude"
+    assert response.text == "here is the design"
+
+
+def test_poll_for_response_claude_end_turn_stop_reason(tmp_path):
+    """poll_for_response detects Claude turn via stop_reason=end_turn (v2.1.77+)."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    # no turn_duration entry — only stop_reason: "end_turn" on the assistant
+    _write_jsonl(
+        claude_session,
+        [
+            {
+                "timestamp": "2026-02-22T10:00:00Z",
+                "type": "user",
+                "sessionId": "claude-session",
+                "message": {"role": "user", "content": "design api"},
+            },
+            {
+                "timestamp": "2026-02-22T10:00:01Z",
+                "type": "assistant",
+                "sessionId": "claude-session",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "here is the design"}],
+                    "stop_reason": "end_turn",
+                },
+            },
+        ],
+    )
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
+    )
+
+    pending = PendingSend(
+        target_agent="claude", before_cursor=0, sent_text="--- user ---\ndesign api"
+    )
+    result = router.poll_for_response(pending)
+    assert result is not None
+    assert result.agent == "claude"
+    assert result.text == "here is the design"
 
 
 def test_wait_for_response_claude_stop_event_fallback(tmp_path):
