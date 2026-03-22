@@ -232,6 +232,36 @@ def test_empty_paste_submits_empty():
     assert event.value == ""
 
 
+# -- ctrl+u (clear input) ----------------------------------------------------
+
+
+def test_ctrl_u_clears_buffer():
+    """Ctrl+U clears the input buffer and submits empty on next Enter."""
+    buf = list("some in-progress text")
+    event = _feed_bytes(b"\x15\r", buffer=buf, cursor=10)
+    assert event.kind == "submit"
+    assert event.value == ""
+
+
+def test_ctrl_u_during_paste_is_suppressed():
+    """Ctrl+U inside bracketed paste is silently dropped (not printable)."""
+    # \x15 is < " " so the printable-character guard rejects it; the
+    # explicit Ctrl+U handler is gated on `not pasting`, so during paste
+    # the character is simply consumed without effect
+    event = _feed_bytes(_paste_then_enter("before\x15after"))
+    assert event.kind == "submit"
+    assert "before" in event.value
+    assert "after" in event.value
+
+
+def test_ctrl_u_preserves_history():
+    """Ctrl+U clears the buffer but history navigation still works."""
+    # type some text, ctrl+u to clear, then up-arrow to load history, submit
+    event = _feed_bytes(b"draft\x15\x1b[A\r", history=["previous"])
+    assert event.kind == "submit"
+    assert event.value == "previous"
+
+
 # -- delete (forward) key ----------------------------------------------------
 
 

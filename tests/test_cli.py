@@ -602,7 +602,8 @@ def test_run_repl_collab_command_clears_terminal_line(tmp_path):
     assert clear_line_mock.call_count == 2
 
 
-def test_run_repl_seeded_collab_clears_terminal_line(tmp_path):
+def _seed_collab_application(tmp_path):
+    """Build a ClaodexApplication with a pre-seeded collab_seed for gate tests."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     session_file = tmp_path / "session.jsonl"
@@ -618,6 +619,11 @@ def test_run_repl_seeded_collab_clears_terminal_line(tmp_path):
         ),
         ResponseTurn(agent="claude", text="seed response", source_cursor=1),
     )
+    return workspace, participants, application
+
+
+def test_run_repl_seeded_collab_clears_terminal_line(tmp_path):
+    workspace, participants, application = _seed_collab_application(tmp_path)
 
     events = iter(
         [
@@ -635,13 +641,94 @@ def test_run_repl_seeded_collab_clears_terminal_line(tmp_path):
         patch("claodex.cli.Router", return_value=object()),
         patch("claodex.cli.kill_session"),
         patch.object(application, "_read_event", side_effect=fake_read_event),
+        patch.object(
+            application._editor,
+            "read",
+            return_value=InputEvent(kind="submit", value="y"),
+        ),
         patch.object(application, "_run_collab") as run_collab_mock,
         patch.object(application, "_clear_terminal_line") as clear_line_mock,
     ):
         application._run_repl(workspace, participants)
 
     run_collab_mock.assert_called_once()
-    assert clear_line_mock.call_count == 2
+    # 3 calls: before confirmation prompt, before collab, after collab
+    assert clear_line_mock.call_count == 3
+
+
+def test_run_repl_seeded_collab_accepted(tmp_path):
+    """User typing 'y' at the confirmation gate starts collab."""
+    workspace, participants, application = _seed_collab_application(tmp_path)
+
+    events = iter(
+        [
+            InputEvent(kind="collab_initiated"),
+            InputEvent(kind="quit"),
+        ]
+    )
+
+    def fake_read_event(_target: str, on_idle=None):  # noqa: ANN001
+        _ = on_idle
+        return next(events)
+
+    bus = _BusRecorder()
+    with (
+        patch("claodex.cli.UIEventBus", return_value=bus),
+        patch("claodex.cli.Router", return_value=object()),
+        patch("claodex.cli.kill_session"),
+        patch.object(application, "_read_event", side_effect=fake_read_event),
+        patch.object(
+            application._editor,
+            "read",
+            return_value=InputEvent(kind="submit", value="yes"),
+        ),
+        patch.object(application, "_run_collab") as run_collab_mock,
+        patch.object(application, "_clear_terminal_line"),
+    ):
+        application._run_repl(workspace, participants)
+
+    run_collab_mock.assert_called_once()
+    collab_events = [e for e in bus.events if e["kind"] == "collab"]
+    assert any("initiated" in e["message"] for e in collab_events)
+
+
+def test_run_repl_seeded_collab_declined(tmp_path):
+    """User typing 'n' at the confirmation gate skips collab."""
+    workspace, participants, application = _seed_collab_application(tmp_path)
+
+    events = iter(
+        [
+            # collab_initiated with a draft that should be restored
+            InputEvent(kind="collab_initiated", value="my draft"),
+            InputEvent(kind="quit"),
+        ]
+    )
+
+    def fake_read_event(_target: str, on_idle=None):  # noqa: ANN001
+        _ = on_idle
+        return next(events)
+
+    bus = _BusRecorder()
+    with (
+        patch("claodex.cli.UIEventBus", return_value=bus),
+        patch("claodex.cli.Router", return_value=object()),
+        patch("claodex.cli.kill_session"),
+        patch.object(application, "_read_event", side_effect=fake_read_event),
+        patch.object(
+            application._editor,
+            "read",
+            return_value=InputEvent(kind="submit", value="n"),
+        ),
+        patch.object(application, "_run_collab") as run_collab_mock,
+        patch.object(application, "_clear_terminal_line"),
+    ):
+        application._run_repl(workspace, participants)
+
+    run_collab_mock.assert_not_called()
+    # draft should be restored as prefill for the next prompt
+    assert application._input_prefill == "my draft"
+    collab_events = [e for e in bus.events if e["kind"] == "collab"]
+    assert any("declined" in e["message"] for e in collab_events)
 
 
 def test_clear_terminal_screen_clears_scrollback_when_tty():

@@ -233,7 +233,8 @@ The CLI MUST provide:
 | Tab | Toggle target | No effect |
 | Enter | Submit message | Submit interjection |
 | Ctrl+J | Insert newline | Insert newline |
-| Ctrl+C | Clear input | Halt collab |
+| Ctrl+U | Clear input | Clear input |
+| Ctrl+C | Interrupt | Halt collab |
 | Ctrl+D | Quit | No effect |
 
 ## UI Event System
@@ -503,9 +504,12 @@ after the anchor trigger an `interference detected` error and abort.
 
 An agent can end its response with `[COLLAB]` on its own line. The CLI:
 
-1. Preserves the signal line in the routed message.
-2. Routes the response to the peer as turn 1.
-3. Continues the standard collab loop.
+1. Detects the signal during idle polling.
+2. Prompts the user for confirmation. If declined, the signal is ignored
+   and the response is treated as a normal watched reply.
+3. If accepted, preserves the signal line in the routed message.
+4. Routes the response to the peer as turn 1.
+5. Continues the standard collab loop.
 
 ### User interjections
 

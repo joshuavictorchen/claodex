@@ -6,6 +6,63 @@ filler, use tables over prose where possible. Latest entries first.
 
 ---
 
+## enhancements — 2026-03-22
+
+### Problem
+
+Three recurring agent misbehaviors during collaborative sessions:
+
+1. Agents auto-initiate collab (`[COLLAB]`) without user request, despite
+   SKILL.md discouraging it.
+2. Agents place `[COLLAB]`/`[CONVERGED]` at the beginning of messages where
+   the router (which checks the last non-empty line) cannot detect them.
+3. Agents verbally agree ("yep we're good") without emitting `[CONVERGED]`,
+   causing infinite back-and-forth collab loops.
+
+Separately, no keyboard shortcut existed to clear in-progress input — users
+had to backspace through the entire buffer.
+
+### Root cause
+
+1. SKILL.md had a subjective escape clause ("unless the task genuinely requires
+   peer input") and no user-approval gate in the code path.
+2. SKILL.md did not explain that signals are detected on the last line only.
+3. SKILL.md did not explicitly state that verbal agreement is insufficient —
+   the literal flag is required.
+
+### Changes
+
+**`claodex/skill/SKILL.md`**: rewrote `## collab mode` section. `[COLLAB]`
+now framed as a request requiring user approval. Added `### signals`
+subsection explaining last-line-only detection. Added `### convergence`
+subsection with explicit rules: verbal agreement does not count, literal
+`[CONVERGED]` flag is required.
+
+**`claodex/cli.py`**: added user confirmation gate in the `collab_initiated`
+REPL handler. When an agent signals `[COLLAB]`, the CLI now prompts
+`"allow? (y to accept)"` before starting the exchange. Decline restores any
+in-progress draft. Added `InputEvent` to top-level imports.
+
+**`claodex/input_editor.py`**: added Ctrl+U (`\x15`) handler in `_read_loop`
+to clear the input buffer, reset cursor and history navigation state, and
+re-render. Suppressed during bracketed paste, consistent with Ctrl+C/Ctrl+D.
+
+**`docs/spec.md`**: added Ctrl+U to keyboard shortcuts table. Updated Ctrl+C
+description from "Clear input" to "Interrupt". Updated agent-initiated collab
+section with confirmation step.
+
+**`docs/codemap.md`**: updated Input Editor interface description and
+collab prevention invariant.
+
+### Future enhancement
+
+Auto-stall detection: after N consecutive turns where both agents respond with
+short messages (<50 words) and neither signals `[CONVERGED]`, auto-warn or
+auto-halt. This would catch the verbal-agreement death spiral at the code
+level rather than relying solely on instructions.
+
+---
+
 ## claude-jsonl-turn_duration-change — 2026-03-17
 
 ### Problem

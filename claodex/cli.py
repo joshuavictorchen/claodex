@@ -25,7 +25,7 @@ from .constants import (
 )
 from .errors import ClaodexError
 from .extract import ExtractionError, resolve_workspace_root
-from .input_editor import InputEditor
+from .input_editor import InputEditor, InputEvent
 from .router import PendingSend, ResponseTurn, Router, RoutingConfig, count_words
 from .state import (
     Participant,
@@ -766,9 +766,42 @@ class ClaodexApplication:
                 if event.kind == "collab_initiated" and self._collab_seed is not None:
                     seed_pending, seed_response = self._collab_seed
                     self._collab_seed = None
-                    # preserve in-progress user input for after collab
-                    if event.value:
-                        self._input_prefill = event.value
+                    draft = event.value or ""
+                    agent_name = seed_response.agent
+
+                    # prompt user for approval before starting collab
+                    self._clear_terminal_line()
+                    sys.stdout.write(
+                        f"  {agent_name} signaled [COLLAB]. "
+                        f"allow? (y to accept)\r\n"
+                    )
+                    sys.stdout.flush()
+                    try:
+                        confirm = self._editor.read(target)
+                    except KeyboardInterrupt:
+                        confirm = InputEvent(kind="decline")
+
+                    accepted = (
+                        confirm.kind == "submit"
+                        and confirm.value.strip().lower() in ("y", "yes")
+                    )
+
+                    if not accepted:
+                        self._input_prefill = draft
+                        self._log_event(
+                            bus,
+                            "collab",
+                            f"user declined {agent_name} collab request",
+                            agent=agent_name,
+                        )
+                        if confirm.kind == "quit":
+                            self._log_event(bus, "system", "shutting down")
+                            kill_session(self._session_name)
+                            return
+                        continue
+
+                    if draft:
+                        self._input_prefill = draft
                     self._clear_watches(router)
                     peer = peer_agent(seed_response.agent)
                     request = CollabRequest(
@@ -779,8 +812,8 @@ class ClaodexApplication:
                     self._log_event(
                         bus,
                         "collab",
-                        f"{seed_response.agent} initiated collaboration",
-                        agent=seed_response.agent,
+                        f"{agent_name} initiated collaboration",
+                        agent=agent_name,
                     )
                     self._clear_terminal_line()
                     self._run_collab(

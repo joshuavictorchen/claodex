@@ -208,6 +208,16 @@ class InputEditor:
                 self._write("\r\n")
                 return InputEvent(kind="quit")
 
+            # ctrl+u clears the entire input buffer
+            if key == "\x15" and not pasting:
+                buffer.clear()
+                cursor = 0
+                history_index = None
+                saved_history_buffer = None
+                saved_history_cursor = 0
+                previous_render = self._render(prompt, buffer, cursor, previous_render)
+                continue
+
             # ctrl+j (0x0a / \n) inserts a newline; during paste, \r also
             # inserts a newline instead of submitting
             if key == "\x0a" or (key == "\r" and pasting):
