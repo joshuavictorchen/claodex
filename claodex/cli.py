@@ -141,7 +141,7 @@ class ClaodexApplication:
         self._collab_interjections: queue.Queue[str] = queue.Queue()
         self._input_prefill: str = ""
         self._post_halt: bool = False
-        self._post_reject_agents: set[str] = set()
+        self._post_reject: bool = False
         self._session_name: str = SESSION_NAME
 
     @staticmethod
@@ -778,7 +778,7 @@ class ClaodexApplication:
 
                     if not accepted:
                         self._input_prefill = draft
-                        self._post_reject_agents.add(agent_name)
+                        self._post_reject = True
                         self._log_event(
                             bus,
                             "collab",
@@ -857,9 +857,9 @@ class ClaodexApplication:
                         text = f"(collab halted by user)\n\n{text}"
                         self._post_halt = False
 
-                    if target in self._post_reject_agents:
+                    if self._post_reject:
                         text = f"(collab rejected by user)\n\n{text}"
-                        self._post_reject_agents.discard(target)
+                        self._post_reject = False
 
                     pending = router.send_user_message(target, text)
                     self._log_event(bus, "sent", f"-> {target}", target=target)

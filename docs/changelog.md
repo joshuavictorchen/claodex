@@ -72,11 +72,12 @@ subsection with explicit rules: verbal agreement does not count, literal
 
 **`claodex/cli.py`**: added user confirmation gate in the `collab_initiated`
 REPL handler. When an agent signals `[COLLAB]`, the CLI shows an inline
-accept/deny selector (default: deny). On denial, a per-agent rejection
-annotation `"(collab rejected by user)"` is deferred and prepended to the
-next real message sent to the requesting agent (mirrors `_post_halt` pattern).
+accept/deny selector (default: deny). On denial, a global rejection flag
+is set and `"(collab rejected by user)"` is prepended to the next user
+message delivered in normal mode, to either agent (mirrors `_post_halt`
+pattern). The annotation is consumed on delivery and not retained per-agent.
 On acceptance, collab starts as before. Added `InputEvent` to top-level
-imports. Added `_post_reject_agents` state field.
+imports. Added `_post_reject` boolean state field.
 
 **`claodex/input_editor.py`**: added `InputEditor.confirm(question)` method
 for the inline accept/deny selector. Uses raw terminal mode, left/right

@@ -714,7 +714,7 @@ def test_run_repl_seeded_collab_declined(tmp_path):
 
     run_collab_mock.assert_not_called()
     assert application._input_prefill == "my draft"
-    assert "claude" in application._post_reject_agents
+    assert application._post_reject is True
     collab_events = [e for e in bus.events if e["kind"] == "collab"]
     assert any("declined" in e["message"] for e in collab_events)
 
@@ -1433,8 +1433,8 @@ def test_run_repl_prepends_post_halt_annotation_once(tmp_path):
     assert application._post_halt is False
 
 
-def test_run_repl_prepends_post_reject_annotation_to_requesting_agent(tmp_path):
-    """Rejection annotation is prepended only to the requesting agent's next message."""
+def test_run_repl_post_reject_annotation_delivered_to_next_agent(tmp_path):
+    """Rejection annotation is prepended to the next message regardless of target agent."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     session_file = tmp_path / "session.jsonl"
@@ -1443,9 +1443,9 @@ def test_run_repl_prepends_post_reject_annotation_to_requesting_agent(tmp_path):
     application = ClaodexApplication()
     router = _ReplRouterStub()
 
-    # simulate: collab rejected by claude, then user sends to codex, then claude
+    # simulate: collab rejected (by claude), then user sends to codex first
     # REPL starts with target=claude; toggle to codex, send, toggle back, send
-    application._post_reject_agents = {"claude"}
+    application._post_reject = True
 
     events = iter(
         [
@@ -1470,18 +1470,18 @@ def test_run_repl_prepends_post_reject_annotation_to_requesting_agent(tmp_path):
     ):
         application._run_repl(workspace, participants)
 
-    # codex message should NOT have the annotation
-    assert router.sent_user_messages[0] == ("codex", "message to codex")
-    # claude message should have the rejection annotation prepended
-    assert router.sent_user_messages[1] == (
-        "claude",
-        "(collab rejected by user)\n\nmessage to claude",
+    # codex gets the annotation (first message after rejection)
+    assert router.sent_user_messages[0] == (
+        "codex",
+        "(collab rejected by user)\n\nmessage to codex",
     )
-    assert "claude" not in application._post_reject_agents
+    # claude message has no annotation (already consumed)
+    assert router.sent_user_messages[1] == ("claude", "message to claude")
+    assert application._post_reject is False
 
 
-def test_run_repl_double_rejection_preserves_both_annotations(tmp_path):
-    """Rejecting both agents before messaging either preserves both annotations."""
+def test_run_repl_double_rejection_delivers_annotation_once(tmp_path):
+    """Multiple rejections collapse; annotation delivered once to the first recipient."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     session_file = tmp_path / "session.jsonl"
@@ -1490,8 +1490,8 @@ def test_run_repl_double_rejection_preserves_both_annotations(tmp_path):
     application = ClaodexApplication()
     router = _ReplRouterStub()
 
-    # both agents rejected before any real message sent
-    application._post_reject_agents = {"claude", "codex"}
+    # double rejection collapses to a single boolean
+    application._post_reject = True
 
     events = iter(
         [
@@ -1515,15 +1515,14 @@ def test_run_repl_double_rejection_preserves_both_annotations(tmp_path):
     ):
         application._run_repl(workspace, participants)
 
+    # first message gets the annotation
     assert router.sent_user_messages[0] == (
         "claude",
         "(collab rejected by user)\n\nto claude",
     )
-    assert router.sent_user_messages[1] == (
-        "codex",
-        "(collab rejected by user)\n\nto codex",
-    )
-    assert len(application._post_reject_agents) == 0
+    # second message has no annotation (already consumed)
+    assert router.sent_user_messages[1] == ("codex", "to codex")
+    assert application._post_reject is False
 
 
 def test_run_repl_superseded_watch_preserves_blocks_for_seed_logs(tmp_path):

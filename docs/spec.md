@@ -1285,8 +1285,9 @@ design the auth flow
 Collab continues from turn 2 as in C1.
 
 **If user denies** — collab does not start. A's response is treated as a
-normal watched reply. On A's next message from the user, the text is
-prepended with `(collab rejected by user)` so A has context.
+normal watched reply. On the next user message delivered in normal mode, to
+either agent, the text is prepended with `(collab rejected by user)`. The
+annotation is delivered once globally and is not retained per-agent.
 
 ---
 
