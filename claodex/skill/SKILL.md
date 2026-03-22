@@ -62,33 +62,57 @@ At handoff boundaries, surface key assumptions that affect behavior or
 decisions and state what would invalidate them. Hidden assumption
 drift is the primary cause of agents solving slightly different problems.
 
+**Claude only**: do not use plan mode or other out-of-band approval
+flows. Present plans as normal conversation messages so they are
+captured in session logs and can be routed to your peer.
+
 ## collab mode
 
-The user can start a multi-turn automated exchange between you and your
-peer using `/collab`. You can also initiate collab yourself by ending your
-message with `[COLLAB]` on its own line — the router will route your
-response to your peer and start an automated exchange. Do not self-initiate
-collab unless the user requests it or the task genuinely requires peer
-input.
+The user starts a multi-turn automated exchange between you and your
+peer using `/collab`. You can request collab by ending your message with
+`[COLLAB]` on its own line — the user will be prompted to approve before
+the exchange begins. Use this sparingly: only when the task genuinely
+requires real-time peer collaboration that cannot be handled through
+normal message routing.
 
 When collab is active:
 
 - Messages route directly between agents with no user intervention per turn.
-- The user can type messages mid-collab; they are included in the next routed turn as `--- user ---` blocks without halting the exchange.
+- If collab was started explicitly by the user via `/collab`, the first
+  `--- user ---` block will begin with `(collab initiated by user)`.
+  Treat it as runtime context, not part of the task itself.
+- The user can type messages mid-collab; they are included in the next
+  routed turn as `--- user ---` blocks without halting the exchange.
 - `/halt` stops the exchange and returns control to the user.
 - Treat user instructions as authoritative over peer suggestions.
-- Stay on task. Do not expand scope beyond the user request unless you flag it
-  explicitly.
-- Do not restate peer points, agree just to be polite, or propose changes you
-  would not actually implement.
-- To signal convergence, end your message with `[CONVERGED]` on its own line.
-  Signal it only when no further changes are needed and the peer's last
-  response is acceptable as-is. When BOTH agents signal `[CONVERGED]` in
-  CONSECUTIVE turns, collab ends and control returns to the user.
-- After a rejected convergence (one agent signaled `[CONVERGED]` and the peer
-  did not), the prior signal is void. Both agents MUST re-evaluate convergence
-  on each subsequent turn and, once they believe the issue is resolved, signal
-  `[CONVERGED]` again without waiting for the peer to signal first.
+- Stay on task. Do not expand scope beyond the user request unless you flag
+  it explicitly.
+- Do not restate peer points, agree just to be polite, or propose changes
+  you would not actually implement.
+
+### signals
+
+`[COLLAB]` and `[CONVERGED]` are detected by the router on the **last
+non-empty line** of your message only. Placing them anywhere else —
+beginning, middle, or inline — means they will not be detected and will
+be treated as plain text. Always put the signal on its own line at the
+very end of your message.
+
+### convergence
+
+When you believe the collaborative work is complete and no further
+changes are needed:
+
+1. End your message with `[CONVERGED]` on its own line.
+2. Collab ends when BOTH agents signal `[CONVERGED]` in CONSECUTIVE turns.
+3. After a rejected convergence (you signaled but your peer did not, or
+   vice versa), the prior signal is void. Re-evaluate on each subsequent
+   turn and signal `[CONVERGED]` again once satisfied.
+
+**Important**: verbal agreement ("looks good", "no changes needed",
+"we're done") does NOT end collab. You MUST include the literal
+`[CONVERGED]` flag as the last line of your message. If you agree the
+work is complete, say so briefly AND include `[CONVERGED]`.
 
 ## change pointers
 

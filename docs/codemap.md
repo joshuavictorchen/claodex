@@ -66,10 +66,10 @@ claodex/
 
 - **Owns**: raw-mode terminal line editor for REPL input, idle callback scheduling, input prefill restoration
 - **Key files**: `input_editor.py` (InputEditor class, raw terminal mode context manager)
-- **Interface**: `InputEditor.read(target, on_idle, idle_interval, prefill)` returns `InputEvent(kind, value)`
+- **Interface**: `InputEditor.read(target, on_idle, idle_interval, prefill)` returns `InputEvent(kind, value)`; `InputEditor.confirm(question)` returns bool via inline accept/deny selector; keybindings include Tab (toggle), Ctrl+J (newline), Ctrl+U (clear input), Ctrl+C (interrupt), Ctrl+D (quit)
 - **Depends on**: (stdlib only)
 - **Depended on by**: cli
-- **Invariants**: tracks visual line count (accounting for terminal wrapping) to correctly clear/redraw multi-line input; suppresses idle callback while bracketed paste is active; when idle callback interrupts with a non-empty draft, draft text is emitted in `InputEvent.value` for caller-side restore
+- **Invariants**: tracks visual line count (accounting for terminal wrapping) to correctly clear/redraw multi-line input; suppresses idle callback while bracketed paste is active; when idle callback interrupts with a non-empty draft, draft text is emitted in `InputEvent.value` for caller-side restore; confirmation selector is a transient UI element that fully clears itself from the terminal after use, preserving the "prompt + user text only" input pane invariant
 
 #### UI Event Bus (`claodex/ui.py`)
 
@@ -167,7 +167,8 @@ State on disk:
 - **Stuck cursor recovery**: after 3 failed parse attempts or 10s on the same line, the cursor skips forward 1 line
 - **Pane liveness**: dead panes cause immediate `ClaodexError` on send or wait
 - **Pending watch model**: one watch per target agent; newer sends supersede older watches and clear their poll latches via `Router.clear_poll_latch()`
-- **Spurious collab prevention**: SKILL.md instructs agents not to self-initiate `[COLLAB]` unless the user requests it or the task genuinely requires peer input
+- **Agent-initiated collab gate**: SKILL.md instructs agents that `[COLLAB]` requests require user approval; the CLI prompts for confirmation before starting agent-initiated collab
+- **User-initiated collab marker**: explicit `/collab` prepends `(collab initiated by user)` inside the first `user` block so both agents can distinguish a user-started collab from an agent-approved one
 - **Output routing model**: after REPL starts, runtime status/errors/progress are emitted to `UIEventBus` instead of stdout
 - **Think-time accounting model**: sidebar completed think time is derived by pairing UI `sent(target)` and `recv(agent)` events
 - **Skill asset deployment**: `_install_skill_assets()` copies `claodex/skill/` to `~/.claude/skills/claodex/` and `~/.codex/skills/claodex/` on every startup

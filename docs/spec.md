@@ -112,7 +112,7 @@ existing `.claodex/` state directory.
    │        Input         │    Sidebar     │
    │                      │                │  (~33%)
    └──────────────────────┴────────────────┘
-            (57%)               (43%)
+           (~57%)              (~43%)
    ```
 
 2. Start `codex` in the top-left pane and `claude` in the top-right pane,
@@ -233,7 +233,8 @@ The CLI MUST provide:
 | Tab | Toggle target | No effect |
 | Enter | Submit message | Submit interjection |
 | Ctrl+J | Insert newline | Insert newline |
-| Ctrl+C | Clear input | Halt collab |
+| Ctrl+U | Clear input | Clear input |
+| Ctrl+C | Interrupt | Halt collab |
 | Ctrl+D | Quit | No effect |
 
 ## UI Event System
@@ -503,9 +504,19 @@ after the anchor trigger an `interference detected` error and abort.
 
 An agent can end its response with `[COLLAB]` on its own line. The CLI:
 
-1. Preserves the signal line in the routed message.
-2. Routes the response to the peer as turn 1.
-3. Continues the standard collab loop.
+1. Detects the signal during idle polling.
+2. Prompts the user for confirmation. If declined, the signal is ignored
+   and the response is treated as a normal watched reply.
+3. If accepted, preserves the signal line in the routed message.
+4. Routes the response to the peer as turn 1.
+5. Continues the standard collab loop.
+
+### User-initiated collab
+
+When the user starts collab explicitly with `/collab`, the CLI prepends
+`(collab initiated by user)` inside the first `--- user ---` block. This
+marker is runtime context so agents can distinguish an explicit user-started
+collab from an agent-approved `[COLLAB]` request.
 
 ### User interjections
 
@@ -1107,6 +1118,8 @@ on step 3).
 **turn 1 — A sees**:
 ```
 --- user ---
+(collab initiated by user)
+
 discuss the API
 ```
 
@@ -1115,6 +1128,8 @@ discuss the API
 **turn 2 — B sees**:
 ```
 --- user ---
+(collab initiated by user)
+
 discuss the API
 
 --- claude ---
@@ -1250,11 +1265,13 @@ C6/C8).
 **input pane**:
 1. `A ❯ design the auth flow`
 2. A responds with `[COLLAB]` on the last line
+3. CLI displays inline confirmation selector (default: deny)
+4. User toggles to accept and presses Enter
 
 **A sees**: the user's message (normal delivery). A responds with `[COLLAB]`.
 
-**B sees** (turn 1, automatic): A's full response including the `[COLLAB]`
-signal, plus any earlier user context B has not yet received:
+**If user accepts** — **B sees** (turn 1): A's full response including the
+`[COLLAB]` signal, plus any earlier user context B has not yet received:
 ```
 --- user ---
 design the auth flow
@@ -1266,6 +1283,11 @@ design the auth flow
 ```
 
 Collab continues from turn 2 as in C1.
+
+**If user denies** — collab does not start. A's response is treated as a
+normal watched reply. On the next user message delivered in normal mode, to
+either agent, the text is prepended with `(collab rejected by user)`. The
+annotation is delivered once globally and is not retained per-agent.
 
 ---
 

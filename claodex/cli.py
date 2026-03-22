@@ -25,7 +25,7 @@ from .constants import (
 )
 from .errors import ClaodexError
 from .extract import ExtractionError, resolve_workspace_root
-from .input_editor import InputEditor
+from .input_editor import InputEditor, InputEvent
 from .router import PendingSend, ResponseTurn, Router, RoutingConfig, count_words
 from .state import (
     Participant,
@@ -141,6 +141,7 @@ class ClaodexApplication:
         self._collab_interjections: queue.Queue[str] = queue.Queue()
         self._input_prefill: str = ""
         self._post_halt: bool = False
+        self._post_reject: bool = False
         self._session_name: str = SESSION_NAME
 
     @staticmethod
@@ -766,9 +767,28 @@ class ClaodexApplication:
                 if event.kind == "collab_initiated" and self._collab_seed is not None:
                     seed_pending, seed_response = self._collab_seed
                     self._collab_seed = None
-                    # preserve in-progress user input for after collab
-                    if event.value:
-                        self._input_prefill = event.value
+                    draft = event.value or ""
+                    agent_name = seed_response.agent
+
+                    # inline selector: defaults to deny, left/right toggles
+                    self._clear_terminal_line()
+                    accepted = self._editor.confirm(
+                        f"{agent_name} signaled [COLLAB]."
+                    )
+
+                    if not accepted:
+                        self._input_prefill = draft
+                        self._post_reject = True
+                        self._log_event(
+                            bus,
+                            "collab",
+                            f"user declined {agent_name} collab request",
+                            agent=agent_name,
+                        )
+                        continue
+
+                    if draft:
+                        self._input_prefill = draft
                     self._clear_watches(router)
                     peer = peer_agent(seed_response.agent)
                     request = CollabRequest(
@@ -779,8 +799,8 @@ class ClaodexApplication:
                     self._log_event(
                         bus,
                         "collab",
-                        f"{seed_response.agent} initiated collaboration",
-                        agent=seed_response.agent,
+                        f"{agent_name} initiated collaboration",
+                        agent=agent_name,
                     )
                     self._clear_terminal_line()
                     self._run_collab(
@@ -836,6 +856,10 @@ class ClaodexApplication:
                     if self._post_halt:
                         text = f"(collab halted by user)\n\n{text}"
                         self._post_halt = False
+
+                    if self._post_reject:
+                        text = f"(collab rejected by user)\n\n{text}"
+                        self._post_reject = False
 
                     pending = router.send_user_message(target, text)
                     self._log_event(bus, "sent", f"-> {target}", target=target)
@@ -1254,7 +1278,10 @@ class ClaodexApplication:
                 self._mark_agent_thinking(bus, next_target, sent_at=pending.sent_at)
                 self._log_event(bus, "collab", f"routing -> {next_target}", target=next_target)
             else:
-                pending = router.send_user_message(request.start_agent, request.message)
+                pending = router.send_user_message(
+                    request.start_agent,
+                    f"(collab initiated by user)\n\n{request.message}",
+                )
                 self._log_event(
                     bus,
                     "sent",

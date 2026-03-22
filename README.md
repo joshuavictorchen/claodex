@@ -36,13 +36,12 @@ invoke the skill and complete registration.
 ┌───────────────────┬───────────────────┐
 │                   │                   │
 │       Codex       │      Claude       │
-│                   │                   │  (~67%)
+│                   │                   │
 │                   │                   │
 ├───────────────────┴──┬────────────────┤
 │        Input         │    Sidebar     │
-│                      │                │  (~33%)
+│                      │                │
 └──────────────────────┴────────────────┘
-         (57%)               (43%)
 ```
 
 Multiple instances work simultaneously — each workspace gets its own tmux
@@ -79,8 +78,10 @@ route to agent B → wait → route back → repeat. The loop runs until the tur
 limit, `/halt`, or both agents signal `[CONVERGED]`.
 
 You can type messages mid-collab — they're included in the next routed turn as
-`--- user ---` blocks. Agents can also initiate collab by ending a response
-with `[COLLAB]`.
+`--- user ---` blocks. When collab is started explicitly with `/collab`, the
+first user block is prefixed with `(collab initiated by user)` so both agents
+can see that the user started the exchange. Agents can also initiate collab by
+ending a response with `[COLLAB]`.
 
 ## Sidebar
 

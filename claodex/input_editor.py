@@ -123,6 +123,97 @@ class InputEditor:
             finally:
                 self._write("\x1b[?2004l")
 
+    def confirm(self, question: str) -> bool:
+        """Show an inline accept/deny selector and return the user's choice.
+
+        Renders a selector with left/right arrow toggle. Enter confirms
+        the selection; Ctrl+C or Ctrl+D denies. Default selection is deny.
+        Does not record history or emit the submit separator. Fully clears
+        all visual rows on exit, even if the selector wrapped in a narrow
+        terminal.
+
+        Args:
+            question: Text displayed before the selector options.
+
+        Returns:
+            True if the user selected accept, False otherwise.
+        """
+        # 0 = accept, 1 = deny; default to deny
+        selected = 1
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        fd = sys.stdin.fileno()
+        rendered_rows = 1
+
+        with _raw_terminal_mode(fd):
+            rendered_rows = self._render_selector(question, selected)
+            while True:
+                ready, _, _ = select.select([sys.stdin], [], [])
+                if not ready:
+                    continue
+
+                char = os.read(fd, 1)
+                if not char:
+                    self._clear_selector(rendered_rows)
+                    return False
+
+                key = _decode_utf8_key(decoder, char)
+                if key is None:
+                    continue
+
+                # Ctrl+C or Ctrl+D = deny
+                if key in ("\x03", "\x04"):
+                    self._clear_selector(rendered_rows)
+                    return False
+
+                # Enter = confirm current selection
+                if key == "\r":
+                    self._clear_selector(rendered_rows)
+                    return selected == 0
+
+                # escape sequences for arrow keys toggle selection
+                if key == "\x1b":
+                    seq = self._read_escape_sequence()
+                    if seq in {"[C", "OC", "[D", "OD"}:
+                        self._clear_selector(rendered_rows)
+                        selected = 1 - selected
+                        rendered_rows = self._render_selector(question, selected)
+
+    def _render_selector(self, question: str, selected: int) -> int:
+        """Render the confirmation selector and return the visual row count.
+
+        Args:
+            question: Text displayed before the options.
+            selected: 0 for accept, 1 for deny.
+
+        Returns:
+            Number of visual rows the rendered selector occupies.
+        """
+        if selected == 0:
+            accept = "\033[1m[accept]\033[0m"
+            deny = "\033[90m deny \033[0m"
+        else:
+            accept = "\033[90m accept \033[0m"
+            deny = "\033[1m[deny]\033[0m"
+        selector = f"  {question}  {accept}  {deny}"
+        # ANSI escapes are zero-width, so compute visual rows from the
+        # formatted selector text rather than duplicating label lengths.
+        visible_len = _visible_len(selector)
+        columns = _terminal_columns()
+        row_count = max(1, (visible_len + columns - 1) // columns)
+        self._write(f"\r\x1b[2K{selector}")
+        return row_count
+
+    def _clear_selector(self, row_count: int) -> None:
+        """Clear all visual rows occupied by the confirmation selector.
+
+        Args:
+            row_count: Number of visual rows to clear.
+        """
+        # move to the first row of the selector, then clear each row
+        self._move_up(row_count - 1)
+        self._clear_n_lines(row_count)
+        self._move_up(row_count - 1)
+
     def _read_loop(
         self,
         prompt: str,
@@ -207,6 +298,16 @@ class InputEditor:
             if key == "\x04" and not pasting:
                 self._write("\r\n")
                 return InputEvent(kind="quit")
+
+            # ctrl+u clears the entire input buffer
+            if key == "\x15" and not pasting:
+                buffer.clear()
+                cursor = 0
+                history_index = None
+                saved_history_buffer = None
+                saved_history_cursor = 0
+                previous_render = self._render(prompt, buffer, cursor, previous_render)
+                continue
 
             # ctrl+j (0x0a / \n) inserts a newline; during paste, \r also
             # inserts a newline instead of submitting

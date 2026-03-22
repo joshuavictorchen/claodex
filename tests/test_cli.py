@@ -602,7 +602,8 @@ def test_run_repl_collab_command_clears_terminal_line(tmp_path):
     assert clear_line_mock.call_count == 2
 
 
-def test_run_repl_seeded_collab_clears_terminal_line(tmp_path):
+def _seed_collab_application(tmp_path):
+    """Build a ClaodexApplication with a pre-seeded collab_seed for gate tests."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     session_file = tmp_path / "session.jsonl"
@@ -618,6 +619,11 @@ def test_run_repl_seeded_collab_clears_terminal_line(tmp_path):
         ),
         ResponseTurn(agent="claude", text="seed response", source_cursor=1),
     )
+    return workspace, participants, application
+
+
+def test_run_repl_seeded_collab_clears_terminal_line(tmp_path):
+    workspace, participants, application = _seed_collab_application(tmp_path)
 
     events = iter(
         [
@@ -635,13 +641,82 @@ def test_run_repl_seeded_collab_clears_terminal_line(tmp_path):
         patch("claodex.cli.Router", return_value=object()),
         patch("claodex.cli.kill_session"),
         patch.object(application, "_read_event", side_effect=fake_read_event),
+        patch.object(application._editor, "confirm", return_value=True),
         patch.object(application, "_run_collab") as run_collab_mock,
         patch.object(application, "_clear_terminal_line") as clear_line_mock,
     ):
         application._run_repl(workspace, participants)
 
     run_collab_mock.assert_called_once()
-    assert clear_line_mock.call_count == 2
+    # 3 calls: before confirmation selector, before collab, after collab
+    assert clear_line_mock.call_count == 3
+
+
+def test_run_repl_seeded_collab_accepted(tmp_path):
+    """User accepting the inline selector starts collab."""
+    workspace, participants, application = _seed_collab_application(tmp_path)
+
+    events = iter(
+        [
+            InputEvent(kind="collab_initiated"),
+            InputEvent(kind="quit"),
+        ]
+    )
+
+    def fake_read_event(_target: str, on_idle=None):  # noqa: ANN001
+        _ = on_idle
+        return next(events)
+
+    bus = _BusRecorder()
+    with (
+        patch("claodex.cli.UIEventBus", return_value=bus),
+        patch("claodex.cli.Router", return_value=object()),
+        patch("claodex.cli.kill_session"),
+        patch.object(application, "_read_event", side_effect=fake_read_event),
+        patch.object(application._editor, "confirm", return_value=True),
+        patch.object(application, "_run_collab") as run_collab_mock,
+        patch.object(application, "_clear_terminal_line"),
+    ):
+        application._run_repl(workspace, participants)
+
+    run_collab_mock.assert_called_once()
+    collab_events = [e for e in bus.events if e["kind"] == "collab"]
+    assert any("initiated" in e["message"] for e in collab_events)
+
+
+def test_run_repl_seeded_collab_declined(tmp_path):
+    """User denying the inline selector skips collab and sets rejection annotation."""
+    workspace, participants, application = _seed_collab_application(tmp_path)
+
+    events = iter(
+        [
+            # collab_initiated with a draft that should be restored
+            InputEvent(kind="collab_initiated", value="my draft"),
+            InputEvent(kind="quit"),
+        ]
+    )
+
+    def fake_read_event(_target: str, on_idle=None):  # noqa: ANN001
+        _ = on_idle
+        return next(events)
+
+    bus = _BusRecorder()
+    with (
+        patch("claodex.cli.UIEventBus", return_value=bus),
+        patch("claodex.cli.Router", return_value=object()),
+        patch("claodex.cli.kill_session"),
+        patch.object(application, "_read_event", side_effect=fake_read_event),
+        patch.object(application._editor, "confirm", return_value=False),
+        patch.object(application, "_run_collab") as run_collab_mock,
+        patch.object(application, "_clear_terminal_line"),
+    ):
+        application._run_repl(workspace, participants)
+
+    run_collab_mock.assert_not_called()
+    assert application._input_prefill == "my draft"
+    assert application._post_reject is True
+    collab_events = [e for e in bus.events if e["kind"] == "collab"]
+    assert any("declined" in e["message"] for e in collab_events)
 
 
 def test_clear_terminal_screen_clears_scrollback_when_tty():
@@ -906,7 +981,9 @@ def test_run_collab_halt_drops_remaining_interjections(tmp_path):
     application._halt_listener = fake_halt_listener  # type: ignore[method-assign]
     application._run_collab(workspace_root=workspace, router=router, request=request)
 
-    assert router.send_user_calls == [("claude", "do the task")]
+    assert router.send_user_calls == [
+        ("claude", "(collab initiated by user)\n\ndo the task")
+    ]
     assert captured_editor is application._editor
     assert router.send_routed_calls == []
     assert router.sync_target_calls == [("claude",)]
@@ -1034,6 +1111,26 @@ def test_run_collab_seed_turn_routes_collab_signal(tmp_path):
     )
 
     assert router.send_routed_calls[0][2] == "seed reply\n\n[COLLAB]"
+
+
+def test_run_collab_marks_first_user_block_only_for_explicit_collab(tmp_path):
+    """Explicit `/collab` injects a user-start marker into the first user block."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    application = ClaodexApplication()
+    router = _RouterStub()
+    request = CollabRequest(turns=1, start_agent="claude", message="design the API")
+
+    def fake_halt_listener(*_args, **_kwargs):  # noqa: ANN001
+        return
+
+    application._halt_listener = fake_halt_listener  # type: ignore[method-assign]
+    application._run_collab(workspace_root=workspace, router=router, request=request)
+
+    assert router.send_user_calls == [
+        ("claude", "(collab initiated by user)\n\ndesign the API")
+    ]
 
 
 def test_run_collab_logs_sent_events_for_routed_turns(tmp_path):
@@ -1334,6 +1431,98 @@ def test_run_repl_prepends_post_halt_annotation_once(tmp_path):
     )
     assert router.sent_user_messages[1] == ("claude", "second follow-up")
     assert application._post_halt is False
+
+
+def test_run_repl_post_reject_annotation_delivered_to_next_agent(tmp_path):
+    """Rejection annotation is prepended to the next message regardless of target agent."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_file = tmp_path / "session.jsonl"
+    session_file.write_text("", encoding="utf-8")
+    participants = _build_participants(workspace, session_file)
+    application = ClaodexApplication()
+    router = _ReplRouterStub()
+
+    # simulate: collab rejected (by claude), then user sends to codex first
+    # REPL starts with target=claude; toggle to codex, send, toggle back, send
+    application._post_reject = True
+
+    events = iter(
+        [
+            InputEvent(kind="toggle"),                                # claude -> codex
+            InputEvent(kind="submit", value="message to codex"),      # sent to codex
+            InputEvent(kind="toggle"),                                # codex -> claude
+            InputEvent(kind="submit", value="message to claude"),     # sent to claude
+            InputEvent(kind="quit"),
+        ]
+    )
+
+    def fake_read_event(_target: str, on_idle=None):  # noqa: ANN001
+        _ = on_idle
+        return next(events)
+
+    with (
+        patch("claodex.cli.UIEventBus", return_value=_BusRecorder()),
+        patch("claodex.cli.Router", return_value=router),
+        patch("claodex.cli.kill_session"),
+        patch.object(application, "_read_event", side_effect=fake_read_event),
+        patch.object(application, "_clear_terminal_line"),
+    ):
+        application._run_repl(workspace, participants)
+
+    # codex gets the annotation (first message after rejection)
+    assert router.sent_user_messages[0] == (
+        "codex",
+        "(collab rejected by user)\n\nmessage to codex",
+    )
+    # claude message has no annotation (already consumed)
+    assert router.sent_user_messages[1] == ("claude", "message to claude")
+    assert application._post_reject is False
+
+
+def test_run_repl_double_rejection_delivers_annotation_once(tmp_path):
+    """Multiple rejections collapse; annotation delivered once to the first recipient."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_file = tmp_path / "session.jsonl"
+    session_file.write_text("", encoding="utf-8")
+    participants = _build_participants(workspace, session_file)
+    application = ClaodexApplication()
+    router = _ReplRouterStub()
+
+    # double rejection collapses to a single boolean
+    application._post_reject = True
+
+    events = iter(
+        [
+            InputEvent(kind="submit", value="to claude"),
+            InputEvent(kind="toggle"),
+            InputEvent(kind="submit", value="to codex"),
+            InputEvent(kind="quit"),
+        ]
+    )
+
+    def fake_read_event(_target: str, on_idle=None):  # noqa: ANN001
+        _ = on_idle
+        return next(events)
+
+    with (
+        patch("claodex.cli.UIEventBus", return_value=_BusRecorder()),
+        patch("claodex.cli.Router", return_value=router),
+        patch("claodex.cli.kill_session"),
+        patch.object(application, "_read_event", side_effect=fake_read_event),
+        patch.object(application, "_clear_terminal_line"),
+    ):
+        application._run_repl(workspace, participants)
+
+    # first message gets the annotation
+    assert router.sent_user_messages[0] == (
+        "claude",
+        "(collab rejected by user)\n\nto claude",
+    )
+    # second message has no annotation (already consumed)
+    assert router.sent_user_messages[1] == ("codex", "to codex")
+    assert application._post_reject is False
 
 
 def test_run_repl_superseded_watch_preserves_blocks_for_seed_logs(tmp_path):
