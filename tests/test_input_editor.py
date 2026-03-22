@@ -389,6 +389,15 @@ def test_confirm_narrow_terminal_clears_all_wrapped_rows():
     assert "\x1b[" in rendered and "A" in rendered
 
 
+def test_confirm_narrow_terminal_toggle_clears_before_rerender():
+    """Wrapped selectors must clear before redraw when toggling options."""
+    result, _, writes = _feed_confirm(b"\x1b[D\r", columns=20)
+    assert result is True
+    rendered = "".join(writes)
+    assert "[accept]" in rendered
+    assert rendered.count("\x1b[1A") >= 2
+
+
 # -- delete (forward) key ----------------------------------------------------
 
 

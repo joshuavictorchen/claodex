@@ -44,7 +44,7 @@ accept/deny selector (default: deny). On denial, a per-agent rejection
 annotation `"(collab rejected by user)"` is deferred and prepended to the
 next real message sent to the requesting agent (mirrors `_post_halt` pattern).
 On acceptance, collab starts as before. Added `InputEvent` to top-level
-imports. Added `_post_reject_agent` state field.
+imports. Added `_post_reject_agents` state field.
 
 **`claodex/input_editor.py`**: added `InputEditor.confirm(question)` method
 for the inline accept/deny selector. Uses raw terminal mode, left/right

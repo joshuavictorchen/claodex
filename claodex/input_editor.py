@@ -174,6 +174,7 @@ class InputEditor:
                 if key == "\x1b":
                     seq = self._read_escape_sequence()
                     if seq in {"[C", "OC", "[D", "OD"}:
+                        self._clear_selector(rendered_rows)
                         selected = 1 - selected
                         rendered_rows = self._render_selector(question, selected)
 
@@ -193,12 +194,13 @@ class InputEditor:
         else:
             accept = "\033[90m accept \033[0m"
             deny = "\033[1m[deny]\033[0m"
-        # the visible content length determines how many rows we span
-        # "  {question}  {accept}  {deny}" — ANSI escapes are zero-width
-        visible_len = 2 + len(question) + 2 + 8 + 2 + 6
+        selector = f"  {question}  {accept}  {deny}"
+        # ANSI escapes are zero-width, so compute visual rows from the
+        # formatted selector text rather than duplicating label lengths.
+        visible_len = _visible_len(selector)
         columns = _terminal_columns()
         row_count = max(1, (visible_len + columns - 1) // columns)
-        self._write(f"\r\x1b[2K  {question}  {accept}  {deny}")
+        self._write(f"\r\x1b[2K{selector}")
         return row_count
 
     def _clear_selector(self, row_count: int) -> None:
