@@ -6,6 +6,38 @@ filler, use tables over prose where possible. Latest entries first.
 
 ---
 
+## user-initiated-collab-marker — 2026-03-22
+
+### Problem
+
+Explicit `/collab` starts were visible only in the local exchange log header.
+The agents themselves could not distinguish a user-started collab from an
+agent-approved `[COLLAB]` request, because no runtime marker was injected into
+the message stream.
+
+### Root cause
+
+`ClaodexApplication._run_collab()` tracked `initiated_by` only for exchange-log
+metadata. The initial `/collab` seed message reused the normal `send_user_message`
+path without any collab-origin annotation.
+
+### Changes
+
+**`claodex/cli.py`**: explicit `/collab` now prepends
+`"(collab initiated by user)"` inside the first `user` block sent to the
+starting agent. Agent-approved `[COLLAB]` flows are unchanged.
+
+**`tests/test_cli.py`**: updated collab assertions to check the new marker on
+user-started collab and added a focused regression test for the initial send.
+
+**`claodex/skill/SKILL.md`**: documented the runtime marker so agents interpret
+it as routing context rather than task content.
+
+**`docs/spec.md` / `docs/codemap.md` / `README.md`**: documented that explicit
+`/collab` injects the marker only into the first `user` block.
+
+---
+
 ## enhancements — 2026-03-22
 
 ### Problem

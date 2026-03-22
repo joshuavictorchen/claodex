@@ -981,7 +981,9 @@ def test_run_collab_halt_drops_remaining_interjections(tmp_path):
     application._halt_listener = fake_halt_listener  # type: ignore[method-assign]
     application._run_collab(workspace_root=workspace, router=router, request=request)
 
-    assert router.send_user_calls == [("claude", "do the task")]
+    assert router.send_user_calls == [
+        ("claude", "(collab initiated by user)\n\ndo the task")
+    ]
     assert captured_editor is application._editor
     assert router.send_routed_calls == []
     assert router.sync_target_calls == [("claude",)]
@@ -1109,6 +1111,26 @@ def test_run_collab_seed_turn_routes_collab_signal(tmp_path):
     )
 
     assert router.send_routed_calls[0][2] == "seed reply\n\n[COLLAB]"
+
+
+def test_run_collab_marks_first_user_block_only_for_explicit_collab(tmp_path):
+    """Explicit `/collab` injects a user-start marker into the first user block."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    application = ClaodexApplication()
+    router = _RouterStub()
+    request = CollabRequest(turns=1, start_agent="claude", message="design the API")
+
+    def fake_halt_listener(*_args, **_kwargs):  # noqa: ANN001
+        return
+
+    application._halt_listener = fake_halt_listener  # type: ignore[method-assign]
+    application._run_collab(workspace_root=workspace, router=router, request=request)
+
+    assert router.send_user_calls == [
+        ("claude", "(collab initiated by user)\n\ndesign the API")
+    ]
 
 
 def test_run_collab_logs_sent_events_for_routed_turns(tmp_path):

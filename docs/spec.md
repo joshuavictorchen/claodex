@@ -511,6 +511,13 @@ An agent can end its response with `[COLLAB]` on its own line. The CLI:
 4. Routes the response to the peer as turn 1.
 5. Continues the standard collab loop.
 
+### User-initiated collab
+
+When the user starts collab explicitly with `/collab`, the CLI prepends
+`(collab initiated by user)` inside the first `--- user ---` block. This
+marker is runtime context so agents can distinguish an explicit user-started
+collab from an agent-approved `[COLLAB]` request.
+
 ### User interjections
 
 During collab, typed messages are queued and included in the next routed
@@ -1111,6 +1118,8 @@ on step 3).
 **turn 1 — A sees**:
 ```
 --- user ---
+(collab initiated by user)
+
 discuss the API
 ```
 
@@ -1119,6 +1128,8 @@ discuss the API
 **turn 2 — B sees**:
 ```
 --- user ---
+(collab initiated by user)
+
 discuss the API
 
 --- claude ---

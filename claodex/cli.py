@@ -1278,7 +1278,10 @@ class ClaodexApplication:
                 self._mark_agent_thinking(bus, next_target, sent_at=pending.sent_at)
                 self._log_event(bus, "collab", f"routing -> {next_target}", target=next_target)
             else:
-                pending = router.send_user_message(request.start_agent, request.message)
+                pending = router.send_user_message(
+                    request.start_agent,
+                    f"(collab initiated by user)\n\n{request.message}",
+                )
                 self._log_event(
                     bus,
                     "sent",

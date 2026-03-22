@@ -168,6 +168,7 @@ State on disk:
 - **Pane liveness**: dead panes cause immediate `ClaodexError` on send or wait
 - **Pending watch model**: one watch per target agent; newer sends supersede older watches and clear their poll latches via `Router.clear_poll_latch()`
 - **Agent-initiated collab gate**: SKILL.md instructs agents that `[COLLAB]` requests require user approval; the CLI prompts for confirmation before starting agent-initiated collab
+- **User-initiated collab marker**: explicit `/collab` prepends `(collab initiated by user)` inside the first `user` block so both agents can distinguish a user-started collab from an agent-approved one
 - **Output routing model**: after REPL starts, runtime status/errors/progress are emitted to `UIEventBus` instead of stdout
 - **Think-time accounting model**: sidebar completed think time is derived by pairing UI `sent(target)` and `recv(agent)` events
 - **Skill asset deployment**: `_install_skill_assets()` copies `claodex/skill/` to `~/.claude/skills/claodex/` and `~/.codex/skills/claodex/` on every startup

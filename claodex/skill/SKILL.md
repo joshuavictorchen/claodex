@@ -78,6 +78,9 @@ normal message routing.
 When collab is active:
 
 - Messages route directly between agents with no user intervention per turn.
+- If collab was started explicitly by the user via `/collab`, the first
+  `--- user ---` block will begin with `(collab initiated by user)`.
+  Treat it as runtime context, not part of the task itself.
 - The user can type messages mid-collab; they are included in the next
   routed turn as `--- user ---` blocks without halting the exchange.
 - `/halt` stops the exchange and returns control to the user.
