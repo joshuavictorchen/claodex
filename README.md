@@ -36,13 +36,12 @@ invoke the skill and complete registration.
 ┌───────────────────┬───────────────────┐
 │                   │                   │
 │       Codex       │      Claude       │
-│                   │                   │  (~67%)
+│                   │                   │
 │                   │                   │
 ├───────────────────┴──┬────────────────┤
 │        Input         │    Sidebar     │
-│                      │                │  (~33%)
+│                      │                │
 └──────────────────────┴────────────────┘
-         (57%)               (43%)
 ```
 
 Multiple instances work simultaneously — each workspace gets its own tmux

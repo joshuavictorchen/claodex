@@ -112,7 +112,7 @@ existing `.claodex/` state directory.
    │        Input         │    Sidebar     │
    │                      │                │  (~33%)
    └──────────────────────┴────────────────┘
-            (57%)               (43%)
+           (~57%)              (~43%)
    ```
 
 2. Start `codex` in the top-left pane and `claude` in the top-right pane,
