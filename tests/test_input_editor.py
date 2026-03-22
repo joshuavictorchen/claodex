@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from contextlib import nullcontext
 import os
 from unittest.mock import patch
@@ -260,6 +261,132 @@ def test_ctrl_u_preserves_history():
     event = _feed_bytes(b"draft\x15\x1b[A\r", history=["previous"])
     assert event.kind == "submit"
     assert event.value == "previous"
+
+
+# -- confirm (inline selector) -----------------------------------------------
+
+
+def _feed_confirm(
+    raw: bytes,
+    *,
+    columns: int | None = None,
+) -> tuple[bool, InputEditor, list[str]]:
+    """Feed raw bytes to InputEditor.confirm() and return (result, editor, writes).
+
+    Returns the editor instance and captured writes for history/separator assertions.
+    """
+    stream = iter(raw)
+    writes: list[str] = []
+
+    def fake_read(_fd, _n):
+        try:
+            return bytes([next(stream)])
+        except StopIteration:
+            return b""
+
+    def fake_select(rlist, _w, _x, _timeout=None):
+        return rlist, [], []
+
+    editor = InputEditor()
+    # seed history to verify confirm does not modify it
+    editor._history = [("test > ", "prior entry")]
+
+    patches = [
+        patch("os.read", side_effect=fake_read),
+        patch("select.select", side_effect=fake_select),
+        patch("sys.stdin"),
+        patch.object(editor, "_write", side_effect=writes.append),
+        patch(
+            "claodex.input_editor._raw_terminal_mode",
+            side_effect=lambda _fd: nullcontext(),
+        ),
+    ]
+    if columns is not None:
+        patches.append(
+            patch(
+                "claodex.input_editor._terminal_columns",
+                return_value=columns,
+            )
+        )
+
+    # contextlib.ExitStack handles the variable patch list
+    with contextlib.ExitStack() as stack:
+        mocks = [stack.enter_context(p) for p in patches]
+        # mock_stdin is the third patch
+        mocks[2].fileno.return_value = FAKE_FD
+        result = editor.confirm("test question")
+
+    return result, editor, writes
+
+
+def test_confirm_deny_is_default():
+    """Pressing Enter with no arrow keys selects deny (returns False)."""
+    result, _, _ = _feed_confirm(b"\r")
+    assert result is False
+
+
+def test_confirm_accept_after_toggle():
+    """Left arrow toggles to accept, Enter confirms (returns True)."""
+    # left arrow = ESC [ D
+    result, _, _ = _feed_confirm(b"\x1b[D\r")
+    assert result is True
+
+
+def test_confirm_ctrl_c_denies():
+    """Ctrl+C during confirm returns False."""
+    result, _, _ = _feed_confirm(b"\x03")
+    assert result is False
+
+
+def test_confirm_ctrl_d_denies():
+    """Ctrl+D during confirm returns False."""
+    result, _, _ = _feed_confirm(b"\x04")
+    assert result is False
+
+
+def test_confirm_does_not_record_history():
+    """Confirm must not append to input history — this was the original bug."""
+    _, editor, _ = _feed_confirm(b"\r")
+    assert len(editor._history) == 1
+    assert editor._history[0] == ("test > ", "prior entry")
+
+
+def test_confirm_does_not_emit_separator():
+    """Confirm must not write the submit separator line."""
+    _, _, writes = _feed_confirm(b"\r")
+    rendered = "".join(writes)
+    assert "─" not in rendered
+
+
+def test_confirm_clears_itself():
+    """Confirm clears the selector line on exit."""
+    _, _, writes = _feed_confirm(b"\r")
+    # the final write should be a line-clear escape
+    assert "\r\x1b[2K" in "".join(writes)
+
+
+def test_confirm_toggle_rerenders():
+    """Arrow key toggles between accept and deny, re-rendering each time."""
+    # toggle right then Enter (deny again after round-trip)
+    result, _, writes = _feed_confirm(b"\x1b[D\x1b[C\r")
+    assert result is False
+    rendered = "".join(writes)
+    # should see both [accept] and [deny] rendered at different points
+    assert "[accept]" in rendered
+    assert "[deny]" in rendered
+
+
+def test_confirm_narrow_terminal_clears_all_wrapped_rows():
+    """In a narrow terminal the selector wraps; all rows must be cleared on exit."""
+    # "  test question  [accept]   deny " is ~36 visible chars; at 20 columns
+    # that wraps to 2 visual rows
+    _, _, writes = _feed_confirm(b"\r", columns=20)
+    rendered = "".join(writes)
+    # the clear sequence should move up at least 1 row to reach the first row
+    # of the wrapped selector, then clear multiple lines
+    assert "\x1b[2K" in rendered
+    # verify move-up escape was emitted (multi-row clear uses _move_up)
+    assert "\x1b[" in rendered and "A" in rendered
 
 
 # -- delete (forward) key ----------------------------------------------------

@@ -62,6 +62,10 @@ At handoff boundaries, surface key assumptions that affect behavior or
 decisions and state what would invalidate them. Hidden assumption
 drift is the primary cause of agents solving slightly different problems.
 
+**Claude only**: do not use plan mode or other out-of-band approval
+flows. Present plans as normal conversation messages so they are
+captured in session logs and can be routed to your peer.
+
 ## collab mode
 
 The user starts a multi-turn automated exchange between you and your

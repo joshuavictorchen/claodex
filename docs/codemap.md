@@ -66,10 +66,10 @@ claodex/
 
 - **Owns**: raw-mode terminal line editor for REPL input, idle callback scheduling, input prefill restoration
 - **Key files**: `input_editor.py` (InputEditor class, raw terminal mode context manager)
-- **Interface**: `InputEditor.read(target, on_idle, idle_interval, prefill)` returns `InputEvent(kind, value)`; keybindings include Tab (toggle), Ctrl+J (newline), Ctrl+U (clear input), Ctrl+C (interrupt), Ctrl+D (quit)
+- **Interface**: `InputEditor.read(target, on_idle, idle_interval, prefill)` returns `InputEvent(kind, value)`; `InputEditor.confirm(question)` returns bool via inline accept/deny selector; keybindings include Tab (toggle), Ctrl+J (newline), Ctrl+U (clear input), Ctrl+C (interrupt), Ctrl+D (quit)
 - **Depends on**: (stdlib only)
 - **Depended on by**: cli
-- **Invariants**: tracks visual line count (accounting for terminal wrapping) to correctly clear/redraw multi-line input; suppresses idle callback while bracketed paste is active; when idle callback interrupts with a non-empty draft, draft text is emitted in `InputEvent.value` for caller-side restore
+- **Invariants**: tracks visual line count (accounting for terminal wrapping) to correctly clear/redraw multi-line input; suppresses idle callback while bracketed paste is active; when idle callback interrupts with a non-empty draft, draft text is emitted in `InputEvent.value` for caller-side restore; confirmation selector is a transient UI element that fully clears itself from the terminal after use, preserving the "prompt + user text only" input pane invariant
 
 #### UI Event Bus (`claodex/ui.py`)
 

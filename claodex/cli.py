@@ -141,6 +141,7 @@ class ClaodexApplication:
         self._collab_interjections: queue.Queue[str] = queue.Queue()
         self._input_prefill: str = ""
         self._post_halt: bool = False
+        self._post_reject_agents: set[str] = set()
         self._session_name: str = SESSION_NAME
 
     @staticmethod
@@ -769,35 +770,21 @@ class ClaodexApplication:
                     draft = event.value or ""
                     agent_name = seed_response.agent
 
-                    # prompt user for approval before starting collab
+                    # inline selector: defaults to deny, left/right toggles
                     self._clear_terminal_line()
-                    sys.stdout.write(
-                        f"  {agent_name} signaled [COLLAB]. "
-                        f"allow? (y to accept)\r\n"
-                    )
-                    sys.stdout.flush()
-                    try:
-                        confirm = self._editor.read(target)
-                    except KeyboardInterrupt:
-                        confirm = InputEvent(kind="decline")
-
-                    accepted = (
-                        confirm.kind == "submit"
-                        and confirm.value.strip().lower() in ("y", "yes")
+                    accepted = self._editor.confirm(
+                        f"{agent_name} signaled [COLLAB]."
                     )
 
                     if not accepted:
                         self._input_prefill = draft
+                        self._post_reject_agents.add(agent_name)
                         self._log_event(
                             bus,
                             "collab",
                             f"user declined {agent_name} collab request",
                             agent=agent_name,
                         )
-                        if confirm.kind == "quit":
-                            self._log_event(bus, "system", "shutting down")
-                            kill_session(self._session_name)
-                            return
                         continue
 
                     if draft:
@@ -869,6 +856,10 @@ class ClaodexApplication:
                     if self._post_halt:
                         text = f"(collab halted by user)\n\n{text}"
                         self._post_halt = False
+
+                    if target in self._post_reject_agents:
+                        text = f"(collab rejected by user)\n\n{text}"
+                        self._post_reject_agents.discard(target)
 
                     pending = router.send_user_message(target, text)
                     self._log_event(bus, "sent", f"-> {target}", target=target)

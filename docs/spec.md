@@ -1254,11 +1254,13 @@ C6/C8).
 **input pane**:
 1. `A ❯ design the auth flow`
 2. A responds with `[COLLAB]` on the last line
+3. CLI displays inline confirmation selector (default: deny)
+4. User toggles to accept and presses Enter
 
 **A sees**: the user's message (normal delivery). A responds with `[COLLAB]`.
 
-**B sees** (turn 1, automatic): A's full response including the `[COLLAB]`
-signal, plus any earlier user context B has not yet received:
+**If user accepts** — **B sees** (turn 1): A's full response including the
+`[COLLAB]` signal, plus any earlier user context B has not yet received:
 ```
 --- user ---
 design the auth flow
@@ -1270,6 +1272,10 @@ design the auth flow
 ```
 
 Collab continues from turn 2 as in C1.
+
+**If user denies** — collab does not start. A's response is treated as a
+normal watched reply. On A's next message from the user, the text is
+prepended with `(collab rejected by user)` so A has context.
 
 ---
 

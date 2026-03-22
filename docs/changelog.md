@@ -39,20 +39,31 @@ subsection with explicit rules: verbal agreement does not count, literal
 `[CONVERGED]` flag is required.
 
 **`claodex/cli.py`**: added user confirmation gate in the `collab_initiated`
-REPL handler. When an agent signals `[COLLAB]`, the CLI now prompts
-`"allow? (y to accept)"` before starting the exchange. Decline restores any
-in-progress draft. Added `InputEvent` to top-level imports.
+REPL handler. When an agent signals `[COLLAB]`, the CLI shows an inline
+accept/deny selector (default: deny). On denial, a per-agent rejection
+annotation `"(collab rejected by user)"` is deferred and prepended to the
+next real message sent to the requesting agent (mirrors `_post_halt` pattern).
+On acceptance, collab starts as before. Added `InputEvent` to top-level
+imports. Added `_post_reject_agent` state field.
 
-**`claodex/input_editor.py`**: added Ctrl+U (`\x15`) handler in `_read_loop`
-to clear the input buffer, reset cursor and history navigation state, and
-re-render. Suppressed during bracketed paste, consistent with Ctrl+C/Ctrl+D.
+**`claodex/input_editor.py`**: added `InputEditor.confirm(question)` method
+for the inline accept/deny selector. Uses raw terminal mode, left/right
+arrow toggle, Enter to confirm, Ctrl+C/Ctrl+D to deny. Does not record
+history, does not emit the submit separator, fully clears itself from the
+terminal after use. Added Ctrl+U (`\x15`) handler in `_read_loop` to clear
+the input buffer, reset cursor and history navigation state, and re-render.
+Suppressed during bracketed paste, consistent with Ctrl+C/Ctrl+D.
+
+**`claodex/skill/SKILL.md`**: added Claude-only instruction to avoid plan
+mode and present plans as normal conversation messages.
 
 **`docs/spec.md`**: added Ctrl+U to keyboard shortcuts table. Updated Ctrl+C
 description from "Clear input" to "Interrupt". Updated agent-initiated collab
-section with confirmation step.
+section with confirmation step. Updated C5 matrix scenario with confirmation
+gate and deny path.
 
-**`docs/codemap.md`**: updated Input Editor interface description and
-collab prevention invariant.
+**`docs/codemap.md`**: updated Input Editor interface description, added
+confirm method, and noted transient confirmation UI invariant.
 
 ### Future enhancement
 
