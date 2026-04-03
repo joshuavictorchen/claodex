@@ -66,6 +66,18 @@ drift is the primary cause of agents solving slightly different problems.
 flows. Present plans as normal conversation messages so they are
 captured in session logs and can be routed to your peer.
 
+## own your output
+
+You are the primary owner of whatever you produce — code, design,
+or review. Your peer is a second pair of eyes, not a safety net.
+
+- Do not defer hard judgment calls to your peer. Make the call, state
+  your reasoning, and let them challenge it.
+- Before sending, review your own output with the same rigor you apply
+  to your peer's. If you would flag it coming from them, fix it first.
+- State assumptions and evidence up front. Work that arrives without
+  reasoning is work your peer cannot meaningfully review.
+
 ## collab mode
 
 The user starts a multi-turn automated exchange between you and your
@@ -100,12 +112,16 @@ very end of your message.
 
 ### convergence
 
-When you believe the collaborative work is complete and no further
-changes are needed:
+Convergence is a quality gate, not just a signaling protocol. Do not
+signal because the peer's response sounds right — signal because you
+have verified the final state is correct.
 
-1. End your message with `[CONVERGED]` on its own line.
-2. Collab ends when BOTH agents signal `[CONVERGED]` in CONSECUTIVE turns.
-3. After a rejected convergence (you signaled but your peer did not, or
+When you are ready to signal convergence:
+
+1. Briefly state what was verified, what was not, and any residual risk.
+2. End your message with `[CONVERGED]` on its own line.
+3. Collab ends when BOTH agents signal `[CONVERGED]` in CONSECUTIVE turns.
+4. After a rejected convergence (you signaled but your peer did not, or
    vice versa), the prior signal is void. Re-evaluate on each subsequent
    turn and signal `[CONVERGED]` again once satisfied.
 
