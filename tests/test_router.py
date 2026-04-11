@@ -1448,6 +1448,312 @@ def test_poll_for_response_claude_end_turn_stop_reason(tmp_path):
     assert result.text == "here is the design"
 
 
+def _claude_split_turn_entries(
+    user_text: str, thinking_text: str, visible_text: str
+) -> list[dict]:
+    """Emit a 2.1.101-style split turn: thinking frame then text frame.
+
+    Claude Code v2.1.101+ writes each content block of a streamed assistant
+    message as its own JSONL entry sharing a single message id. Both frames
+    are stamped with the final `stop_reason` of the whole message, so a turn
+    that mixes thinking and text yields two consecutive assistant rows with
+    ``stop_reason="end_turn"``.
+    """
+    message_id = "msg_split_example"
+    return [
+        {
+            "timestamp": "2026-04-11T15:34:32.798Z",
+            "type": "user",
+            "sessionId": "claude-session",
+            "message": {"role": "user", "content": user_text},
+        },
+        {
+            "timestamp": "2026-04-11T15:34:36.042Z",
+            "type": "assistant",
+            "sessionId": "claude-session",
+            "message": {
+                "id": message_id,
+                "role": "assistant",
+                "content": [{"type": "thinking", "thinking": thinking_text}],
+                "stop_reason": "end_turn",
+            },
+        },
+        {
+            "timestamp": "2026-04-11T15:34:38.939Z",
+            "type": "assistant",
+            "sessionId": "claude-session",
+            "message": {
+                "id": message_id,
+                "role": "assistant",
+                "content": [{"type": "text", "text": visible_text}],
+                "stop_reason": "end_turn",
+            },
+        },
+    ]
+
+
+def test_wait_for_response_claude_split_end_turn_frames(tmp_path):
+    """wait_for_response handles a 2.1.101 split-frame turn (thinking + text)."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    _write_jsonl(
+        claude_session,
+        _claude_split_turn_entries(
+            user_text="kick off the collab",
+            thinking_text="planning the reply",
+            visible_text="hey codex\n\n[COLLAB]",
+        ),
+    )
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
+    )
+
+    pending = PendingSend(
+        target_agent="claude",
+        before_cursor=0,
+        sent_text="--- user ---\nkick off the collab",
+    )
+    response = router.wait_for_response(pending=pending, timeout_seconds=0.5)
+    assert response.agent == "claude"
+    # the text frame must be extracted, not the thinking-only leading frame
+    assert response.text == "hey codex\n\n[COLLAB]"
+    assert _last_line_is(response.text, COLLAB_SIGNAL)
+
+
+def test_poll_for_response_claude_split_end_turn_frames(tmp_path):
+    """poll_for_response handles a 2.1.101 split-frame turn (thinking + text).
+
+    Regression: `_scan_claude_turn_end_marker` used to latch onto the first
+    end_turn marker (the thinking frame) and truncate the extraction window
+    before the text frame, causing `poll_for_response` to return None and
+    `[COLLAB]` signals to be missed.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    _write_jsonl(
+        claude_session,
+        _claude_split_turn_entries(
+            user_text="kick off the collab",
+            thinking_text="planning the reply",
+            visible_text="hey codex\n\n[COLLAB]",
+        ),
+    )
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
+    )
+
+    pending = PendingSend(
+        target_agent="claude",
+        before_cursor=0,
+        sent_text="--- user ---\nkick off the collab",
+    )
+    result = router.poll_for_response(pending)
+    assert result is not None
+    assert result.agent == "claude"
+    assert result.text == "hey codex\n\n[COLLAB]"
+    assert _last_line_is(result.text, COLLAB_SIGNAL)
+
+
+def test_wait_for_response_claude_split_end_turn_streaming_race(tmp_path):
+    """wait_for_response recovers when the text frame lands after the thinking frame.
+
+    Regression: under Claude Code v2.1.101, a streaming turn flushes its
+    `thinking` block to the JSONL (already stamped with `stop_reason=end_turn`)
+    before the sibling `text` block lands. Previously the loop raised
+    SMOKE SIGNAL immediately because `_latest_assistant_message_between`
+    returned None for the window ending at the thinking frame. The fix
+    defers on orphan markers and lets a later scan pick up the text frame.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    split = _claude_split_turn_entries(
+        user_text="kick off the collab",
+        thinking_text="planning the reply",
+        visible_text="hey codex\n\n[COLLAB]",
+    )
+    # write only the user row + thinking frame to start the race
+    _write_jsonl(claude_session, split[:2])
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    # use pane_alive as a deterministic "append after first iteration" hook
+    # so the text frame lands between poll #1 and poll #2 without timing
+    # flakiness. the wait loop calls _ensure_target_alive -> pane_alive
+    # once per iteration.
+    pane_alive_calls = {"n": 0}
+
+    def pane_alive_with_delayed_append(pane):
+        pane_alive_calls["n"] += 1
+        if pane_alive_calls["n"] == 2:
+            with claude_session.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(split[2]) + "\n")
+        return True
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=pane_alive_with_delayed_append,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=2),
+    )
+
+    pending = PendingSend(
+        target_agent="claude",
+        before_cursor=0,
+        sent_text="--- user ---\nkick off the collab",
+    )
+    response = router.wait_for_response(pending=pending, timeout_seconds=1.0)
+    assert response.agent == "claude"
+    assert response.text == "hey codex\n\n[COLLAB]"
+    assert _last_line_is(response.text, COLLAB_SIGNAL)
+    # at least 2 poll iterations must have happened (the first observed only
+    # the thinking frame, the second picked up the text frame)
+    assert pane_alive_calls["n"] >= 2
+
+
+def test_wait_for_response_claude_split_orphan_marker_timeout(tmp_path):
+    """wait_for_response raises a distinct SMOKE SIGNAL when the text frame never lands.
+
+    If only the thinking frame is ever flushed to the JSONL, the loop must
+    time out with a clearly labeled error that points at the orphan marker
+    instead of the generic "no marker arrived" message.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    split = _claude_split_turn_entries(
+        user_text="kick off the collab",
+        thinking_text="planning the reply",
+        visible_text="never written",
+    )
+    # write only the user row + thinking frame and leave it there
+    _write_jsonl(claude_session, split[:2])
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
+    )
+
+    pending = PendingSend(
+        target_agent="claude",
+        before_cursor=0,
+        sent_text="--- user ---\nkick off the collab",
+    )
+    with pytest.raises(
+        ClaodexError,
+        match="SMOKE SIGNAL: claude emitted .* but no assistant message was extractable within",
+    ):
+        router.wait_for_response(pending=pending, timeout_seconds=0.1)
+
+
+def test_poll_for_response_claude_split_thinking_only_defers(tmp_path):
+    """When only the thinking frame has landed, poll should defer, not latch.
+
+    In the streaming race where the thinking frame is flushed to disk before
+    the text frame, `poll_for_response` must return None so the next poll can
+    re-scan the window once the text frame appears.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    # only the user row and the thinking frame are visible — no text frame yet
+    split = _claude_split_turn_entries(
+        user_text="kick off the collab",
+        thinking_text="planning the reply",
+        visible_text="hey codex\n\n[COLLAB]",
+    )
+    _write_jsonl(claude_session, split[:2])
+    _write_jsonl(codex_session, _codex_entries("ack", "ack"))
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 0)
+    write_read_cursor(workspace, "codex", 3)
+    write_delivery_cursor(workspace, "codex", 0)
+    write_delivery_cursor(workspace, "claude", 3)
+
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: None,
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.01, turn_timeout_seconds=1),
+    )
+
+    pending = PendingSend(
+        target_agent="claude",
+        before_cursor=0,
+        sent_text="--- user ---\nkick off the collab",
+    )
+    # first poll: thinking frame only — must defer
+    assert router.poll_for_response(pending) is None
+
+    # append the text frame to simulate the delayed flush
+    with claude_session.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(split[2]) + "\n")
+
+    # next poll should recognize the completed turn
+    result = router.poll_for_response(pending)
+    assert result is not None
+    assert result.text == "hey codex\n\n[COLLAB]"
+
+
 def test_wait_for_response_claude_stop_event_fallback(tmp_path):
     """Claude turn without turn_duration is detected via debug-log Stop event."""
     workspace = tmp_path / "workspace"

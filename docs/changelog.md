@@ -107,6 +107,76 @@ level rather than relying solely on instructions.
 
 ---
 
+## claude-jsonl-split-frames — 2026-04-11
+
+### Problem
+
+After upgrading Claude Code to v2.1.101, agent-initiated collab stopped
+kicking off. When Claude ended a message with `[COLLAB]` on the last line,
+the signal was never detected and collab did not start.
+
+### Root cause
+
+Claude Code v2.1.101 streams a single assistant turn to the session JSONL
+as **multiple** consecutive `assistant` entries — one per content block
+(thinking, text, tool_use, etc.) — all sharing the same `message.id`. Each
+entry is stamped with the final `stop_reason` of the whole message. A turn
+that mixes `thinking` and `text` therefore produces two rows both tagged
+`stop_reason == "end_turn"`:
+
+| line | block | stop_reason | visible text |
+|------|-------|-------------|--------------|
+| 15 | thinking | `end_turn` | none |
+| 16 | text | `end_turn` | the actual response, `[COLLAB]` on last line |
+
+`_scan_claude_turn_end_marker` returned the **first** `end_turn` match
+(line 15), so both `poll_for_response` and `wait_for_response` extracted
+assistant text from `[before_cursor, 15]`. That window contains only the
+thinking frame, which has no text blocks, so
+`_latest_assistant_message_between` returned `None`. In
+`wait_for_response`, the `None` branch raised `SMOKE SIGNAL ... no
+assistant message was extractable` on the very first observation and
+never gave the text frame a chance to land. In `poll_for_response`, the
+`None` path returned cleanly but the next poll kept latching onto the
+same first-match line 15, so the idle `[COLLAB]` watcher never fired.
+The debug-log Stop event fallback did not rescue the turn either because
+`~/.claude/debug/{session_id}.txt` is no longer written in v2.1.101.
+
+### Changes
+
+**`claodex/router.py` — `_scan_claude_turn_end_marker`**: scan now records
+the **last** turn-end marker in the window instead of returning on the
+first match. When the thinking frame alone is visible (streaming race),
+extraction still yields `None`; once the text frame lands, the next scan
+finds the later marker and the full response window is extracted.
+
+**`claodex/router.py` — `wait_for_response`**: orphan turn-end markers
+(marker found, no extractable text) now defer to the next poll instead
+of raising immediately. `marker_scan_cursor` is pinned at the orphan
+line so subsequent scans still cover lines appended after it. A new
+terminal SMOKE SIGNAL distinguishes the orphan case from the generic
+"no marker arrived" timeout.
+
+**`tests/test_router.py`**: added five regression tests using a helper
+`_claude_split_turn_entries` that emits the v2.1.101 thinking+text
+layout:
+
+- `test_wait_for_response_claude_split_end_turn_frames` — fully-written
+  turn, single-pass extraction succeeds
+- `test_poll_for_response_claude_split_end_turn_frames` — same, via the
+  non-blocking polling path
+- `test_wait_for_response_claude_split_end_turn_streaming_race` — the
+  text frame is appended between poll iterations via a counter-based
+  `pane_alive` hook; `wait_for_response` must defer on the first orphan
+  marker and recover on the next scan
+- `test_wait_for_response_claude_split_orphan_marker_timeout` — text
+  frame never lands; loop must raise the new orphan-marker SMOKE SIGNAL
+- `test_poll_for_response_claude_split_thinking_only_defers` — two
+  sequential `poll_for_response` calls with the text frame appended in
+  between, exercising the same race from the polling path
+
+---
+
 ## claude-jsonl-turn_duration-change — 2026-03-17
 
 ### Problem
@@ -132,10 +202,9 @@ Claodex had two Claude turn-end detection paths:
 
 **`claodex/router.py` — `_scan_claude_turn_end_marker`**: scan now checks for
 `stop_reason == "end_turn"` on non-sidechain/non-meta assistant entries, in
-addition to the legacy `turn_duration` check. First match wins. Safe because
-`_latest_assistant_message_between` includes the marker line, and the assistant
-entry is always at or before the `turn_duration` line. Debug log fallback
-retained as tertiary path.
+addition to the legacy `turn_duration` check. Debug log fallback retained as
+tertiary path. (See `claude-jsonl-split-frames — 2026-04-11` for the later
+switch from first-match to last-match scanning.)
 
 **`claodex/router.py` — `_turn_end_marker_label`**: updated error label.
 

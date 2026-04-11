@@ -494,6 +494,14 @@ class Router:
         marker_scan_cursor = pending.before_cursor
         saw_codex_task_started = False
         saw_stop_event = False
+        # True once we've seen a turn-end marker whose window had no
+        # extractable assistant text. Under Claude Code v2.1.101 this is the
+        # streaming race where the `thinking` frame is flushed with
+        # `stop_reason=end_turn` before the sibling `text` frame lands. We
+        # defer and keep polling; subsequent scans pick up the later marker
+        # that sits past the text frame. If the text never arrives before
+        # the deadline, the terminal error below distinguishes this case.
+        saw_orphan_turn_end_marker = False
 
         while time.monotonic() < deadline:
             self._ensure_target_alive(participant)
@@ -507,7 +515,6 @@ class Router:
                     start_line=marker_scan_cursor,
                     end_line=current_cursor,
                 )
-                marker_scan_cursor = current_cursor
                 saw_codex_task_started = (
                     saw_codex_task_started or turn_end.saw_codex_task_started
                 )
@@ -518,19 +525,24 @@ class Router:
                         start_line=pending.before_cursor,
                         end_line=turn_end.marker_line,
                     )
-                    if assistant_text is None:
-                        marker_label = self._turn_end_marker_label(target_agent)
-                        raise ClaodexError(
-                            "SMOKE SIGNAL: "
-                            f"{target_agent} emitted {marker_label} but no assistant message was "
-                            "extractable for that turn window; refusing heuristic fallback"
+                    if assistant_text is not None:
+                        marker_scan_cursor = current_cursor
+                        return ResponseTurn(
+                            agent=target_agent,
+                            text=assistant_text,
+                            source_cursor=turn_end.marker_line,
+                            received_at=datetime.now(timezone.utc),
                         )
-                    return ResponseTurn(
-                        agent=target_agent,
-                        text=assistant_text,
-                        source_cursor=turn_end.marker_line,
-                        received_at=datetime.now(timezone.utc),
+                    # orphan marker: defer and let subsequent polls pick up
+                    # a later marker line once the real text frame lands.
+                    # don't advance marker_scan_cursor past the orphan marker,
+                    # so the next scan still covers lines appended after it.
+                    saw_orphan_turn_end_marker = True
+                    marker_scan_cursor = max(
+                        marker_scan_cursor, turn_end.marker_line
                     )
+                else:
+                    marker_scan_cursor = current_cursor
 
                 # interference detection: if a non-meta user row appeared
                 # after the anchor, someone typed directly into the agent's
@@ -591,6 +603,12 @@ class Router:
             raise ClaodexError(
                 "SMOKE SIGNAL: codex emitted task_started but no task_complete marker "
                 f"within {timeout_text}; refusing heuristic fallback"
+            )
+        if saw_orphan_turn_end_marker:
+            raise ClaodexError(
+                "SMOKE SIGNAL: "
+                f"{target_agent} emitted {marker_label} but no assistant message was "
+                f"extractable within {timeout_text}; refusing heuristic fallback"
             )
         if saw_assistant_output:
             raise ClaodexError(
@@ -788,9 +806,20 @@ class Router:
     ) -> TurnEndScan:
         """Scan a Claude line window for a turn-end marker.
 
-        Checks for two markers in source order and returns the first match:
+        Recognizes two markers and returns the LAST occurrence in the window:
         1. assistant entry with stop_reason == "end_turn" (v2.1.77+)
         2. system entry with subtype == "turn_duration" (v2.1.61 and earlier)
+
+        Claude Code v2.1.101+ splits a single streamed assistant turn across
+        multiple JSONL entries (one per content block: thinking, text, etc.),
+        and each entry is stamped with the final `stop_reason` of the whole
+        message. When a turn contains both thinking and text, the thinking
+        entry appears first with `stop_reason=end_turn` but no visible text.
+        Returning the first marker would truncate the scan window before the
+        text frame is included, causing `_latest_assistant_message_between`
+        to return `None` and `[COLLAB]` detection to miss. Scanning to the
+        last marker in the window ensures every frame of the current turn
+        is in range when the text is extracted.
 
         Args:
             participant: Claude participant metadata.
@@ -798,11 +827,12 @@ class Router:
             end_line: Ending cursor (inclusive).
 
         Returns:
-            Scan result. Marker line is the first turn-end marker in the window.
+            Scan result. Marker line is the last turn-end marker in the window.
         """
         lines = read_lines_between(
             participant.session_file, start_line=start_line, end_line=end_line
         )
+        last_marker_line: int | None = None
         for offset, raw_line in enumerate(lines, start=1):
             absolute_line = start_line + offset
             raw_line = raw_line.strip()
@@ -820,7 +850,8 @@ class Router:
                 entry.get("type") == "system"
                 and entry.get("subtype") == "turn_duration"
             ):
-                return TurnEndScan(marker_line=absolute_line)
+                last_marker_line = absolute_line
+                continue
 
             # new marker: assistant stop_reason == "end_turn" (Claude Code >= v2.1.77)
             if entry.get("isSidechain") or entry.get("isMeta"):
@@ -828,9 +859,9 @@ class Router:
             if entry.get("type") == "assistant":
                 message = entry.get("message", {})
                 if isinstance(message, dict) and message.get("stop_reason") == "end_turn":
-                    return TurnEndScan(marker_line=absolute_line)
+                    last_marker_line = absolute_line
 
-        return TurnEndScan(marker_line=None)
+        return TurnEndScan(marker_line=last_marker_line)
 
     def _scan_claude_debug_stop_event(
         self,
