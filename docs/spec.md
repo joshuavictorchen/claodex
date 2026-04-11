@@ -464,7 +464,7 @@ the row MUST NOT be emitted as a deliverable user event.
 /collab [--turns N] [--start <agent>] <message>
 ```
 
-- `--turns N`: maximum turns (default: 100). One turn = one message sent
+- `--turns N`: maximum turns (default: 12). One turn = one message sent
   and one response received.
 - `--start <agent>`: which agent receives the initial message (default:
   current target).

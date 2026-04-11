@@ -240,7 +240,7 @@ def _participants(
 
 def test_parse_collab_request_defaults():
     parsed = parse_collab_request("/collab design api", default_start="claude")
-    assert parsed.turns == 100
+    assert parsed.turns == 12
     assert parsed.start_agent == "claude"
     assert parsed.message == "design api"
 

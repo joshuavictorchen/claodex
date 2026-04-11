@@ -2,18 +2,47 @@
 
 Multi-agent collaboration CLI for Claude Code and Codex.
 
-Routes messages between two AI coding agents with **zero per-turn agent
-overhead** — no tool calls, no fetch scripts. An external process tails each
-agent's session log, computes the delta of unseen peer events, and injects it
-as a plain user message. Each agent sees a continuous conversation at minimal
-token cost: exactly the peer events it hasn't seen yet, no duplicates, no
-full-history replays.
+`claodex` runs Claude Code and Codex as live peers in one workspace. It
+forwards only the new peer messages each agent has not seen yet, so long
+exchanges stay synchronized without bloating the prompt. The result is a
+three-way group chat between you, Claude, and Codex, with every message
+tagged by author.
 
-Agents integrate through a **skill file** (`SKILL.md`) installed at startup.
-The skill tells each agent how messages are routed, how to read source headers
-(`--- user ---`, `--- claude ---`, `--- codex ---`), and how to behave during
-automated collab. No plugins or special tooling — the skill file and a
-one-time registration command are the entire integration surface.
+Both agents run in their normal CLI sessions inside two tmux panes. A router
+tails each agent's session JSONL, tracks delivery state, and injects the next
+peer events as a plain user message on the following turn. From each agent's
+point of view, the conversation simply continues with clear source-tagged
+headers (`--- user ---`, `--- claude ---`, `--- codex ---`).
+
+## What you gain
+
+- **Efficient long exchanges.** Each agent receives exactly the peer events it
+  has not seen yet, so token use grows with the conversation instead of with
+  repeated history.
+- **Agents run untouched.** Claude Code and Codex keep their normal CLI
+  sessions, skills, MCP servers, and hooks. claodex integrates through a
+  single skill file plus a one-line registration command; the rest of the
+  routing, state, and UI runs outside the agent.
+- **Clear peer review.** Source headers preserve authorship, so each agent can
+  challenge the other as a peer instead of collapsing into one blended voice.
+- **Live operator control.** Type into the REPL during an automated exchange
+  and your input joins the next routed turn as a `--- user ---` block.
+
+## Collab mode
+
+`/collab <message>` runs the routing loop without human intervention each
+turn: deliver to agent A, wait for its response, deliver to agent B, wait,
+repeat. The loop stops when the turn limit is hit, you run `/halt`, or both
+agents end consecutive turns with `[CONVERGED]` on the last line.
+
+Messages you type during collab are queued and included in the next routed
+turn as `--- user ---` blocks. The first routed turn of a user-initiated
+collab carries `(collab initiated by user)` so both agents can see who
+started the exchange. Agents can also request collab themselves by ending a
+turn with `[COLLAB]` on its own line; the REPL prompts you to approve before
+the exchange begins.
+
+Default turn limit is 12. Override with `--turns N`.
 
 ## Prerequisites
 
@@ -44,8 +73,8 @@ invoke the skill and complete registration.
 └──────────────────────┴────────────────┘
 ```
 
-Multiple instances work simultaneously — each workspace gets its own tmux
-session.
+Multiple instances run side by side. Each workspace gets its own tmux
+session, keyed by directory.
 
 ## REPL controls
 
@@ -65,31 +94,20 @@ The prompt shows your current target agent (`claude ❯ _` or `codex ❯ _`).
 | Command | Description |
 |---|---|
 | `/collab <message>` | Start automated collaboration between agents |
-| `/collab --turns N <message>` | Limit to N turns (default: 100) |
+| `/collab --turns N <message>` | Limit to N turns (default: 12) |
 | `/collab --start codex <message>` | Start with Codex going first |
 | `/halt` | Halt a running collaboration after the current turn |
 | `/status` | Show runtime status in the sidebar |
 | `/quit` | Kill agents, tmux session, and exit |
 
-## Collab mode
-
-`/collab` automates the routing loop: send to agent A → wait for response →
-route to agent B → wait → route back → repeat. The loop runs until the turn
-limit, `/halt`, or both agents signal `[CONVERGED]`.
-
-You can type messages mid-collab — they're included in the next routed turn as
-`--- user ---` blocks. When collab is started explicitly with `/collab`, the
-first user block is prefixed with `(collab initiated by user)` so both agents
-can see that the user started the exchange. Agents can also initiate collab by
-ending a response with `[COLLAB]`.
-
 ## Sidebar
 
-The bottom-right pane runs a curses-based sidebar showing:
+The bottom-right pane runs a curses sidebar with three sections:
 
-- **Metrics strip** — target, mode, agent thinking status, uptime, turn counts
-- **Scrolling log** — timestamped, color-coded events
-- **Shell runner** — `$` prompt for non-interactive commands in the workspace
+- **Metrics strip**: current target, mode, per-agent thinking status, uptime,
+  turn counts
+- **Scrolling log**: timestamped, color-coded routing events
+- **Shell runner**: `$` prompt for non-interactive commands in the workspace
 
 ## Resuming sessions
 
@@ -107,8 +125,8 @@ Use `tmux ls` to list sessions, `tmux kill-session -t <name>` to clean up.
 
 ## tmux basics
 
-claodex manages the tmux session for you — you rarely need tmux commands
-directly. The essentials:
+claodex manages the tmux session for you, so you rarely need raw tmux
+commands. The essentials:
 
 | Action | Keys |
 |---|---|
