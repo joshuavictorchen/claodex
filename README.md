@@ -14,15 +14,18 @@ peer events as a plain user message on the following turn. From each agent's
 point of view, the conversation simply continues with clear source-tagged
 headers (`--- user ---`, `--- claude ---`, `--- codex ---`).
 
-## What you gain
+## Why claodex
 
+- **Agents run untouched.** Claude Code and Codex keep their existing skills,
+  MCP servers, hooks, and permissions. claodex integrates through a single
+  skill file plus a one-line registration command; the rest of the routing,
+  state, and UI lives outside the agent.
+- **Visible thinking.** Both agents run in their normal CLI sessions, so you watch their
+  work unfold live in each pane: messages, tool calls, diffs, and permission prompts
+  all arrive in real time.
 - **Efficient long exchanges.** Each agent receives exactly the peer events it
   has not seen yet, so token use grows with the conversation instead of with
   repeated history.
-- **Agents run untouched.** Claude Code and Codex keep their normal CLI
-  sessions, skills, MCP servers, and hooks. claodex integrates through a
-  single skill file plus a one-line registration command; the rest of the
-  routing, state, and UI runs outside the agent.
 - **Clear peer review.** Source headers preserve authorship, so each agent can
   challenge the other as a peer instead of collapsing into one blended voice.
 - **Live operator control.** Type into the REPL during an automated exchange
@@ -61,17 +64,7 @@ This creates a tmux session with four panes, launches both agents, installs
 the skill, and drops you into the REPL. Press Enter in each agent pane to
 invoke the skill and complete registration.
 
-```
-┌───────────────────┬───────────────────┐
-│                   │                   │
-│       Codex       │      Claude       │
-│                   │                   │
-│                   │                   │
-├───────────────────┴──┬────────────────┤
-│        Input         │    Sidebar     │
-│                      │                │
-└──────────────────────┴────────────────┘
-```
+![example](./docs/screenshot.png)
 
 Multiple instances run side by side. Each workspace gets its own tmux
 session, keyed by directory.
