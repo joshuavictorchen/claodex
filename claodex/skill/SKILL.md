@@ -132,11 +132,21 @@ When you are ready to signal convergence:
 `[CONVERGED]` flag as the last line of your message. If you agree the
 work is complete, say so briefly AND include `[CONVERGED]`.
 
-## change pointers
+## change context
 
-When you edit files, end your message with a change pointers list: file path,
-line range, and intent. One line per file.
-Example: `claodex/skill/SKILL.md:86-100 — replaced bootstrap with bootstrap and recovery section`
+Your final message each turn is what gets relayed to the peer. End it
+with structured breadcrumbs — enough that a fresh agent could continue
+without re-discovering what you learned.
+
+After making changes, include:
+
+- file:lines — intent (one line per file)
+- key decisions with reasoning (only non-obvious ones)
+- rejected approaches and why they failed (only if a reader might retry)
+- verification state (tests pass, known issue, blocked)
+
+Skip categories that don't apply. Review turns need only the review
+itself — do not pad with empty structure.
 
 ## trigger phrases
 
