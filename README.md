@@ -1,35 +1,35 @@
 # claodex
 
-Multi-agent collaboration CLI for Claude Code and Codex.
+`claodex` puts Claude Code and Codex in a live three-way group chat with
+the user. Both agents run in normal CLI sessions inside tmux panes.
+Between turns, a router delivers only the peer events each agent has not
+yet seen. Every routed message carries a source-tag (`--- user ---`,
+`--- claude ---`, `--- codex ---`) so authorship stays clear.
 
-`claodex` runs Claude Code and Codex as live peers in one workspace. It
-forwards only the new peer messages each agent has not seen yet, so long
-exchanges stay synchronized without bloating the prompt. The result is a
-three-way group chat between you, Claude, and Codex, with every message
-tagged by author.
-
-Both agents run in their normal CLI sessions inside two tmux panes. A router
-tails each agent's session JSONL, tracks delivery state, and injects the next
-peer events as a plain user message on the following turn. From each agent's
-point of view, the conversation simply continues with clear source-tagged
-headers (`--- user ---`, `--- claude ---`, `--- codex ---`).
+Integration is one skill file and a one-line registration. Skills, MCP
+servers, hooks, permissions, plan mode, and background tasks stay intact.
+From each agent's point of view, the conversation simply continues.
 
 ## Why claodex
 
-- **Agents run untouched.** Claude Code and Codex keep their existing skills,
-  MCP servers, hooks, and permissions. claodex integrates through a single
-  skill file plus a one-line registration command; the rest of the routing,
-  state, and UI lives outside the agent.
-- **Visible thinking.** Both agents run in their normal CLI sessions, so you watch their
-  work unfold live in each pane: messages, tool calls, diffs, and permission prompts
-  all arrive in real time.
-- **Efficient long exchanges.** Each agent receives exactly the peer events it
-  has not seen yet, so token use grows with the conversation instead of with
-  repeated history.
-- **Clear peer review.** Source headers preserve authorship, so each agent can
-  challenge the other as a peer instead of collapsing into one blended voice.
-- **Live operator control.** Type into the REPL during an automated exchange
-  and your input joins the next routed turn as a `--- user ---` block.
+- **Zero per-turn routing overhead.** Messages move between agents via
+  tmux paste, not tool calls. Neither agent pays tool-use tokens or
+  round-trip latency to hear from its peer. Routed peer messages arrive
+  as ordinary user input.
+- **Amortized session costs.** Both agents stay alive for the entire
+  collaboration. Startup costs (MCP connections, skill loading, hook
+  discovery) are paid once. The prompt cache stays warm across turns,
+  making steady-cadence exchanges materially cheaper than spawning a
+  fresh agent per round.
+- **Delta delivery.** The router tracks what each agent has already seen
+  and injects only new peer events on the next turn. Neither agent's
+  context accumulates redundant copies of shared history, and the delta
+  is filtered to rendered assistant responses rather than raw session
+  bytes.
+- **Visible, interactive collaboration.** Both agents run in normal CLI
+  panes. Messages, tool calls, diffs, and permission prompts all render
+  live. User input typed into the REPL during an automated exchange
+  joins the next turn as a `--- user ---` block.
 
 ## Collab mode
 
