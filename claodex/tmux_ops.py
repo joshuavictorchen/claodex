@@ -237,7 +237,7 @@ def resolve_layout(session_name: str = SESSION_NAME) -> PaneLayout:
 
 
 def start_agent_processes(layout: PaneLayout, workspace_root: Path) -> None:
-    """Launch codex and claude in their panes.
+    """Launch codex and claude with their registration prompts.
 
     Args:
         layout: Session pane layout.
@@ -249,8 +249,8 @@ def start_agent_processes(layout: PaneLayout, workspace_root: Path) -> None:
     # - CODEX_THREAD_ID: register.py would bind to a parent codex session
     # - CODEX_SANDBOX_ENV: avoids sandbox-mode interference
     env_prefix = "env -u CLAUDECODE -u CODEX_THREAD_ID -u CODEX_SANDBOX_ENV"
-    codex_command = f"cd {ws} && {env_prefix} codex"
-    claude_command = f"cd {ws} && {env_prefix} claude"
+    codex_command = f"cd {ws} && {env_prefix} codex {shlex_quote('$claodex')}"
+    claude_command = f"cd {ws} && {env_prefix} claude {shlex_quote('/claodex')}"
     _run_tmux(["send-keys", "-t", layout.codex, codex_command, "C-m"])
     _run_tmux(["send-keys", "-t", layout.claude, claude_command, "C-m"])
 
@@ -261,64 +261,6 @@ def start_sidebar_process(layout: PaneLayout, workspace_root: Path) -> None:
     ws = shlex_quote(str(workspace_root))
     command = f"{exe} -m claodex sidebar {ws}"
     _run_tmux(["send-keys", "-t", layout.sidebar, command, "C-m"])
-
-
-def verify_prefill(
-    pane_id: str,
-    expected_text: str,
-    timeout_seconds: float = 5.0,
-    poll_seconds: float = 0.3,
-) -> bool:
-    """Return true when typed prefill text appears in the pane tail.
-
-    Polls only the tail of captured pane output to avoid false positives
-    from stale scrollback content.
-
-    Args:
-        pane_id: Target pane id.
-        expected_text: Literal text expected in pane input.
-        timeout_seconds: Maximum time to wait.
-        poll_seconds: Poll interval while waiting.
-    """
-    deadline = time.time() + timeout_seconds
-    while True:
-        result = _run_tmux(
-            ["capture-pane", "-p", "-S", "-8", "-E", "-1", "-t", pane_id],
-            capture_output=True,
-            check=False,
-        )
-        if result.returncode == 0 and expected_text in result.stdout:
-            return True
-        if time.time() >= deadline:
-            return False
-        time.sleep(poll_seconds)
-
-
-def prefill_skill_commands(layout: PaneLayout) -> list[str]:
-    """Type skill trigger commands into agent panes without submitting.
-
-    Prepopulates `/claodex` in Claude and `$claodex` in Codex so the user
-    only needs to press Enter in each pane to trigger registration.
-
-    Returns:
-        Warning messages for panes where prefill could not be confirmed.
-    """
-    warnings: list[str] = []
-    prefill_targets = [
-        ("codex", layout.codex, "$claodex"),
-        ("claude", layout.claude, "/claodex"),
-    ]
-
-    # `-l` for literal text, `--` to prevent tmux flag interpretation
-    for agent, pane_id, command in prefill_targets:
-        _run_tmux(["send-keys", "-t", pane_id, "-l", "--", command])
-        if not verify_prefill(pane_id, command):
-            warnings.append(
-                f"prefill not confirmed for {agent}; "
-                f"type {command} manually"
-            )
-
-    return warnings
 
 
 def is_pane_alive(pane_id: str, session_name: str | None = None) -> bool:

@@ -6,6 +6,34 @@ filler, use tables over prose where possible. Latest entries first.
 
 ---
 
+## automatic-agent-registration — 2026-08-11
+
+### Problem
+
+Startup inserted skill triggers before the agent TUIs had necessarily loaded
+their skill catalogs. The text appeared in each composer, but users sometimes
+had to edit it before the TUI recognized the invocation and then press Enter.
+
+### Root cause
+
+Agent readiness meant only that the pane's foreground process had changed from
+the shell. The prefill check searched rendered pane text and could not verify
+that the TUI had resolved the skill token.
+
+### Changes
+
+**`claodex/tmux_ops.py` / `claodex/cli.py`**: pass `$claodex` and `/claodex`
+as the agents' initial prompts. Registration remains acknowledged by the
+participant files, with no prefill or manual submission step.
+
+**`tests/test_tmux_ops.py`**: verify both launch commands receive the correct
+quoted initial prompt.
+
+**`README.md` / `docs/spec.md` / `docs/codemap.md`**: describe automatic
+registration and remove the prefill workflow.
+
+---
+
 ## user-initiated-collab-marker — 2026-03-22
 
 ### Problem

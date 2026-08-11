@@ -55,7 +55,6 @@ from .tmux_ops import (
     kill_session,
     pane_current_command,
     paste_content,
-    prefill_skill_commands,
     resolve_layout,
     session_exists,
     start_agent_processes,
@@ -220,11 +219,10 @@ class ClaodexApplication:
         Startup sequence:
         1. clear stale participant files
         2. create tmux session with 4 panes
-        3. launch agent processes (codex, claude)
+        3. launch agent processes with registration prompts
         4. wait for agents to be ready (pane command transition)
-        5. prepopulate skill commands in each pane (user presses Enter)
-        6. paste REPL command into input pane
-        7. attach to tmux — user presses Enter in agent panes to register
+        5. paste REPL command into input pane
+        6. attach to tmux and wait for agent registration
 
         Args:
             workspace_root: Workspace root path.
@@ -273,11 +271,6 @@ class ClaodexApplication:
             self._wait_for_agents_ready(layout, baseline)
             print(self._status_line("agents", "ok"))
 
-            self._write_status_line(self._status_line("skill commands", ".."))
-            prefill_skill_commands(layout)
-            self._clear_terminal_line()
-            print(self._status_line("skill commands", "ok"))
-
             print()
             print("  attaching")
 
@@ -308,8 +301,8 @@ class ClaodexApplication:
         """Attach to existing claodex tmux session.
 
         Handles two cases:
-        - Fresh start: registration hasn't happened yet; wait for user to
-          complete registration, then init cursors.
+        - Fresh start: registration hasn't happened yet; wait for the agents
+          to complete registration, then init cursors.
         - Reattach: participants already registered; validate and resume.
 
         Args:
@@ -362,7 +355,7 @@ class ClaodexApplication:
 
         # the initial prompt is immediately redrawn by _rewrite_status_block,
         # but print it once so there's no blank flash
-        prompt_text = "press Enter in each agent pane to invoke the skill and register"
+        prompt_text = "waiting for agents to invoke the claodex skill and register"
         if sys.stdout.isatty():
             print(f"\n  {self._ANSI_DIM}{prompt_text}{self._ANSI_RESET}")
         else:
@@ -622,12 +615,12 @@ class ClaodexApplication:
     def _wait_for_registration(self, workspace_root: Path) -> SessionParticipants:
         """Wait for both agents to complete registration.
 
-        Skill triggers are prefilled in each agent pane; the user presses
-        Enter to invoke them. register.py writes a participant JSON file.
-        This method polls for those files.
+        Each agent receives its skill trigger as its initial prompt.
+        register.py writes a participant JSON file, and this method polls for
+        both files.
 
         Uses _rewrite_status_block to redraw the full status block on each
-        update, which handles stray newlines from accidental keypresses.
+        update.
 
         Args:
             workspace_root: Workspace root path.
@@ -1117,9 +1110,8 @@ class ClaodexApplication:
     def _rewrite_status_block(self, done: list[str], waiting: set[str]) -> None:
         """Clear screen and redraw registration progress.
 
-        Redraws from scratch on each update so stray newlines from
-        accidental keypresses don't leave orphaned status lines.
-        The screen is wiped after registration completes anyway.
+        Redraws from scratch on each update. The screen is wiped after
+        registration completes.
 
         Iterates agents in deterministic order (claude, codex)
         regardless of registration arrival order.
@@ -1135,13 +1127,12 @@ class ClaodexApplication:
                     if agent in waiting:
                         print(self._status_line(agent, "waiting"))
             return
-        # clear screen and redraw all lines including the prompt,
-        # so accidental Enter presses don't orphan any lines
+        # clear screen and redraw all lines including the prompt
         dim = self._ANSI_DIM
         reset = self._ANSI_RESET
         sys.stdout.write("\033[2J\033[H")
         sys.stdout.write(
-            f"\n  {dim}press Enter in each agent pane to invoke the skill and register{reset}\n"
+            f"\n  {dim}waiting for agents to invoke the claodex skill and register{reset}\n"
         )
         sys.stdout.write("\n")
         done_set = set(done)

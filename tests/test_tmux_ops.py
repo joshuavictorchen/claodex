@@ -12,10 +12,9 @@ from claodex.tmux_ops import (
     _submit_delay,
     create_session,
     paste_content,
-    prefill_skill_commands,
     resolve_layout,
+    start_agent_processes,
     start_sidebar_process,
-    verify_prefill,
 )
 
 
@@ -66,8 +65,7 @@ def test_paste_content_raises_when_load_buffer_fails(monkeypatch):
         paste_content("%1", "x" * 50000)
 
 
-def test_prefill_skill_commands_types_without_submitting(monkeypatch):
-    """prefill_skill_commands types commands but does not submit them."""
+def test_start_agent_processes_submits_registration_as_initial_prompts(monkeypatch):
     calls: list[list[str]] = []
 
     def fake_run_tmux(args: list[str], **kwargs):
@@ -76,73 +74,30 @@ def test_prefill_skill_commands_types_without_submitting(monkeypatch):
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("claodex.tmux_ops._run_tmux", fake_run_tmux)
-    monkeypatch.setattr("claodex.tmux_ops.verify_prefill", lambda _pane, _text: True)
 
-    warnings = prefill_skill_commands(
-        PaneLayout(codex="%1", claude="%2", input="%3", sidebar="%4")
-    )
-
-    # should only type literal text — no Escape, no C-m
-    assert calls == [
-        ["send-keys", "-t", "%1", "-l", "--", "$claodex"],
-        ["send-keys", "-t", "%2", "-l", "--", "/claodex"],
-    ]
-    assert warnings == []
-
-
-def test_verify_prefill_detects_expected_text(monkeypatch):
-    outputs = iter(["booting...", "ready $claodex"])
-
-    def fake_run_tmux(args: list[str], **kwargs):
-        _ = kwargs
-        return subprocess.CompletedProcess(
-            args=args,
-            returncode=0,
-            stdout=next(outputs),
-            stderr="",
-        )
-
-    monkeypatch.setattr("claodex.tmux_ops._run_tmux", fake_run_tmux)
-    monkeypatch.setattr("claodex.tmux_ops.time.sleep", lambda _seconds: None)
-
-    assert verify_prefill("%1", "$claodex", timeout_seconds=1.0, poll_seconds=0.0)
-
-
-def test_verify_prefill_times_out_when_text_never_appears(monkeypatch):
-    def fake_run_tmux(args: list[str], **kwargs):
-        _ = kwargs
-        return subprocess.CompletedProcess(
-            args=args,
-            returncode=0,
-            stdout="still booting",
-            stderr="",
-        )
-
-    monkeypatch.setattr("claodex.tmux_ops._run_tmux", fake_run_tmux)
-
-    assert not verify_prefill("%1", "$claodex", timeout_seconds=0.0, poll_seconds=0.0)
-
-
-def test_prefill_skill_commands_returns_warning_when_unconfirmed(monkeypatch):
-    calls: list[list[str]] = []
-
-    def fake_run_tmux(args: list[str], **kwargs):
-        _ = kwargs
-        calls.append(args)
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr("claodex.tmux_ops._run_tmux", fake_run_tmux)
-    monkeypatch.setattr("claodex.tmux_ops.verify_prefill", lambda pane, _text: pane == "%1")
-
-    warnings = prefill_skill_commands(
-        PaneLayout(codex="%1", claude="%2", input="%3", sidebar="%4")
+    start_agent_processes(
+        PaneLayout(codex="%1", claude="%2", input="%3", sidebar="%4"),
+        Path("/workspace"),
     )
 
     assert calls == [
-        ["send-keys", "-t", "%1", "-l", "--", "$claodex"],
-        ["send-keys", "-t", "%2", "-l", "--", "/claodex"],
+        [
+            "send-keys",
+            "-t",
+            "%1",
+            "cd '/workspace' && env -u CLAUDECODE -u CODEX_THREAD_ID "
+            "-u CODEX_SANDBOX_ENV codex '$claodex'",
+            "C-m",
+        ],
+        [
+            "send-keys",
+            "-t",
+            "%2",
+            "cd '/workspace' && env -u CLAUDECODE -u CODEX_THREAD_ID "
+            "-u CODEX_SANDBOX_ENV claude '/claodex'",
+            "C-m",
+        ],
     ]
-    assert warnings == ["prefill not confirmed for claude; type /claodex manually"]
 
 
 def test_start_sidebar_process_sends_sidebar_launch_command(monkeypatch):

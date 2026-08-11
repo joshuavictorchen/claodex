@@ -61,8 +61,8 @@ python3 -m claodex            # from any directory
 ```
 
 This creates a tmux session with four panes, launches both agents, installs
-the skill, and drops you into the REPL. Press Enter in each agent pane to
-invoke the skill and complete registration.
+the skill, registers both agents through their initial prompts, and drops you
+into the REPL.
 
 ![example](./docs/screenshot.png)
 

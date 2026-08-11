@@ -92,11 +92,11 @@ claodex/
 #### tmux Ops (`claodex/tmux_ops.py`)
 
 - **Owns**: all tmux subprocess commands (session/pane lifecycle, content injection)
-- **Key files**: `tmux_ops.py` (session create/kill, layout resolution, sidebar launch, prefill verification, paste_content, _submit_delay)
-- **Interface**: `create_session()`, `start_sidebar_process()`, `prefill_skill_commands()`, `verify_prefill()`, `paste_content()`, `resolve_layout()`, `is_pane_alive()`, `PaneLayout`
+- **Key files**: `tmux_ops.py` (session create/kill, agent and sidebar launch, layout resolution, paste_content, _submit_delay)
+- **Interface**: `create_session()`, `start_agent_processes()`, `start_sidebar_process()`, `paste_content()`, `resolve_layout()`, `is_pane_alive()`, `PaneLayout`
 - **Depends on**: constants, errors
 - **Depended on by**: cli
-- **Invariants**: startup prefill is send-then-verified by polling `capture-pane` tail (`-S -8 -E -1`) with a bounded timeout; paste uses `load-buffer -` (stdin) + `paste-buffer -p -t` (atomic, avoids tmux CLI-argument size limits, and `-p` skips bracketed-paste escapes that Codex's TUI mangles); submit delay scales with payload size (base 0.3s, +0.1s/1000 chars over 2000, capped at 2s)
+- **Invariants**: agent launch commands pass `$claodex` and `/claodex` as initial prompts; paste uses `load-buffer -` (stdin) + `paste-buffer -p -t` (atomic and avoids tmux CLI-argument size limits); submit delay scales with payload size (base 0.3s, +0.1s/1000 chars over 2000, capped at 2s)
 
 #### Skill (`claodex/skill/`)
 
@@ -153,7 +153,7 @@ State on disk:
 | Header stripping | `router.py:strip_injected_context` | Removes nested `--- source ---` blocks from forwarded user messages |
 | Registration | `skill/scripts/register.py` | Discovers session file, writes participant JSON |
 | Terminal input | `input_editor.py:InputEditor.read` | Raw-mode editor with history, Tab toggle, Ctrl+J newlines, idle callback, optional prefill |
-| Prefill readiness check | `tmux_ops.py:prefill_skill_commands`, `tmux_ops.py:verify_prefill` | Types skill trigger then confirms it appears in pane tail; returns non-fatal warnings |
+| Registration startup | `tmux_ops.py:start_agent_processes`, `cli.py:_load_or_wait_participants` | Passes skill triggers as initial prompts and waits for participant files |
 | Exchange logging | `cli.py:_open_exchange_log`, `_append_exchange_message`, `_close_exchange_log` | Log file opens at collab start, appends each message with flush, and writes summary footer at close |
 | Runtime output routing | `cli.py:_run_repl`, `ui.py:UIEventBus` | REPL/collab/status output emits structured events; no runtime stdout prints after REPL starts |
 | Sidebar runtime UI | `sidebar.py:SidebarApplication` | Renders metrics/log panes and executes non-interactive shell commands locally |
@@ -195,9 +195,9 @@ State on disk:
 | `ClaodexApplication` | `claodex/cli.py:133` |
 | `Router` | `claodex/router.py:101` |
 | `extract_room_events_from_window` | `claodex/extract.py:193` |
-| `verify_prefill` | `claodex/tmux_ops.py:266` |
-| `paste_content` | `claodex/tmux_ops.py:402` |
-| `_submit_delay` | `claodex/tmux_ops.py:366` |
+| `start_agent_processes` | `claodex/tmux_ops.py:239` |
+| `paste_content` | `claodex/tmux_ops.py:344` |
+| `_submit_delay` | `claodex/tmux_ops.py:308` |
 | `render_block` | `claodex/router.py:1106` |
 | `strip_injected_context` | `claodex/router.py:1122` |
 | `InputEditor` | `claodex/input_editor.py:71` |

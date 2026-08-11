@@ -115,26 +115,24 @@ existing `.claodex/` state directory.
            (~57%)              (~43%)
    ```
 
-2. Start `codex` in the top-left pane and `claude` in the top-right pane,
-   both with resolved workspace root as cwd.
+2. Start `codex '$claodex'` in the top-left pane and `claude '/claodex'` in
+   the top-right pane, both with resolved workspace root as cwd. Each initial
+   prompt invokes the installed registration skill.
 3. Launch the sidebar process in the bottom-right pane.
 4. Wait for each agent CLI to start (pane command transitions from shell).
-5. Prefill the skill trigger command in each agent pane (`/claodex` for
-   Claude, `$claodex` for Codex).
-6. Paste the attach command into the input pane and attach to tmux — the
-   user presses Enter in each agent pane to trigger registration.
-7. The attach-mode REPL waits for registration files at
+5. Paste the attach command into the input pane and attach to tmux.
+6. The attach-mode REPL waits for registration files at
    `.claodex/participants/{agent}.json`.
-8. After both registrations, initialize all four cursors to current JSONL
+7. After both registrations, initialize all four cursors to current JSONL
    line counts (excluding pre-session history).
-9. Enter the interactive REPL.
+8. Enter the interactive REPL.
 
 ### Constraints
 
 - If the workspace-derived session already exists, MUST refuse and suggest
   `claodex attach` or `tmux kill-session -t <session_name>`.
 - Agent startup timeout: 30 seconds.
-- Registration timeout: 300 seconds (user must press Enter in each pane).
+- Registration timeout: 300 seconds.
 - On timeout, report which agent failed and exit cleanly.
 
 ### Attach (resume)
