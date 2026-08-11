@@ -238,6 +238,37 @@ def _participants(
     )
 
 
+def _route_codex_delta_to_claude(tmp_path: Path, codex_entries: list[dict]) -> str:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_state_layout(workspace)
+
+    claude_session = tmp_path / "claude.jsonl"
+    codex_session = tmp_path / "codex.jsonl"
+    _write_jsonl(claude_session, _claude_entries("ack", "ack"))
+    _write_jsonl(codex_session, codex_entries)
+
+    participants = _participants(workspace, claude_session, codex_session)
+    write_read_cursor(workspace, "claude", 2)
+    write_read_cursor(workspace, "codex", len(codex_entries))
+    write_delivery_cursor(workspace, "codex", 2)
+    write_delivery_cursor(workspace, "claude", 0)
+
+    sent_messages: list[str] = []
+    router = Router(
+        workspace_root=workspace,
+        participants=participants,
+        paste_content=lambda pane, content: sent_messages.append(content),
+        pane_alive=lambda pane: True,
+        config=RoutingConfig(poll_seconds=0.05, turn_timeout_seconds=5),
+    )
+
+    router.send_user_message("claude", "continue")
+
+    assert len(sent_messages) == 1
+    return sent_messages[0]
+
+
 def test_parse_collab_request_defaults():
     parsed = parse_collab_request("/collab design api", default_start="claude")
     assert parsed.turns == 12
@@ -406,6 +437,136 @@ def test_send_user_message_includes_peer_delta_and_advances_delivery_cursor(tmp_
     assert read_delivery_cursor(workspace, "codex") == read_read_cursor(
         workspace, "claude"
     )
+
+
+def test_send_user_message_routes_current_codex_cli_turns_without_skill_payloads(
+    tmp_path,
+):
+    codex_entries = [
+        {
+            "timestamp": "2026-08-11T10:00:00Z",
+            "type": "session_meta",
+            "payload": {"id": "codex-session", "cwd": "ignored"},
+        }
+    ]
+    skill_payload = "<skill>\ninternal skill payload\n</skill>"
+    turns = [
+        ("first CLI question", "first Codex response"),
+        ("second CLI question", "second Codex response"),
+    ]
+    for turn_index, (user_text, assistant_text) in enumerate(turns, start=1):
+        timestamp_prefix = f"2026-08-11T10:0{turn_index}"
+        codex_entries.extend(
+            [
+                {
+                    "timestamp": f"{timestamp_prefix}:00Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started"},
+                },
+                {
+                    "timestamp": f"{timestamp_prefix}:01Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": user_text}],
+                    },
+                },
+                {
+                    "timestamp": f"{timestamp_prefix}:01Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "item_completed",
+                        "item": {
+                            "id": f"user-{turn_index}",
+                            "type": "UserMessage",
+                            "content": [{"type": "text", "text": user_text}],
+                        },
+                    },
+                },
+                {
+                    "timestamp": f"{timestamp_prefix}:02Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": skill_payload}],
+                    },
+                },
+                {
+                    "timestamp": f"{timestamp_prefix}:03Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [
+                            {"type": "output_text", "text": assistant_text}
+                        ],
+                    },
+                },
+                {
+                    "timestamp": f"{timestamp_prefix}:04Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete"},
+                },
+            ]
+        )
+
+    payload = _route_codex_delta_to_claude(tmp_path, codex_entries)
+    expected_fragments = [
+        "--- user ---\nfirst CLI question",
+        "--- codex ---\nfirst Codex response",
+        "--- user ---\nsecond CLI question",
+        "--- codex ---\nsecond Codex response",
+        "--- user ---\ncontinue",
+    ]
+    position = 0
+    for fragment in expected_fragments:
+        next_position = payload.find(fragment, position)
+        assert next_position >= position
+        position = next_position + len(fragment)
+    assert payload.count("--- user ---") == 3
+    assert payload.count("--- codex ---") == 2
+    assert "internal skill payload" not in payload
+
+
+def test_send_user_message_routes_current_codex_desktop_prompt_once(tmp_path):
+    codex_entries = [
+        {
+            "timestamp": "2026-08-11T10:00:00Z",
+            "type": "session_meta",
+            "payload": {"id": "codex-session", "cwd": "ignored"},
+        },
+        {
+            "timestamp": "2026-08-11T10:00:01Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "desktop question"}],
+            },
+        },
+        {
+            "timestamp": "2026-08-11T10:00:01Z",
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "desktop question"},
+        },
+        {
+            "timestamp": "2026-08-11T10:00:02Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "output_text", "text": "desktop response"}
+                ],
+            },
+        },
+    ]
+
+    payload = _route_codex_delta_to_claude(tmp_path, codex_entries)
+    assert payload.count("--- user ---\ndesktop question") == 1
+    assert payload.count("--- codex ---\ndesktop response") == 1
 
 
 def test_send_user_message_filters_meta_user_rows_from_peer_delta(tmp_path):

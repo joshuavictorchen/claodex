@@ -402,9 +402,20 @@ def _extract_codex_room_events(entries: list[dict]) -> tuple[list[dict], list[st
 
         if entry_type == "event_msg":
             payload = entry.get("payload", {})
-            if payload.get("type") != "user_message":
+            user_payload: dict | None = None
+            if payload.get("type") == "user_message":
+                user_payload = payload
+            elif payload.get("type") == "item_completed":
+                item = payload.get("item")
+                if isinstance(item, dict) and item.get("type") == "UserMessage":
+                    user_payload = item
+
+            if user_payload is None:
                 continue
-            if _has_ambiguous_codex_user_payload(payload) and not warned_ambiguous_user_payload:
+            if (
+                _has_ambiguous_codex_user_payload(user_payload)
+                and not warned_ambiguous_user_payload
+            ):
                 warnings.append(
                     "warning: codex user_message payload contains both message and "
                     "content; preferring message"
@@ -414,7 +425,7 @@ def _extract_codex_room_events(entries: list[dict]) -> tuple[list[dict], list[st
             flush_pending_assistant()
             if not timestamp:
                 continue
-            user_text = _extract_codex_user_message_text(payload)
+            user_text = _extract_codex_user_message_text(user_payload)
             if not user_text.strip():
                 continue
             events.append(
@@ -432,6 +443,8 @@ def _extract_codex_room_events(entries: list[dict]) -> tuple[list[dict], list[st
         payload = entry.get("payload", {})
         payload_type = payload.get("type")
 
+        # User response items include runtime-injected instructions and skill
+        # payloads. Canonical user events are handled in the event_msg branch.
         if payload_type != "message" or payload.get("role") != "assistant":
             continue
 
@@ -569,10 +582,10 @@ def _normalize_claude_user_text(text: str) -> str:
 
 
 def _extract_codex_user_message_text(payload: dict) -> str:
-    """Extract user-message text from a Codex `event_msg` payload.
+    """Extract text from a Codex user-event payload or completed item.
 
     Args:
-        payload: Codex `event_msg.payload` object.
+        payload: Codex user-message payload or completed `UserMessage` item.
 
     Returns:
         User message text.
