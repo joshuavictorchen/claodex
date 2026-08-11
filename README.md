@@ -56,13 +56,16 @@ Default turn limit is 12. Override with `--turns N`.
 
 ## Quick start
 
+Install the command in editable mode from the local checkout:
+
 ```bash
-python3 -m claodex            # from any directory
+uv tool install --editable ~/codes/claodex
+claodex
 ```
 
-This creates a tmux session with four panes, launches both agents, installs
-the skill, registers both agents through their initial prompts, and drops you
-into the REPL.
+Run `claodex` from any directory. It creates a tmux session with four panes,
+launches both agents, installs the skill, registers both agents through their
+initial prompts, and drops you into the REPL.
 
 ![example](./docs/screenshot.png)
 
@@ -107,8 +110,8 @@ The bottom-right pane runs a curses sidebar with three sections:
 If the CLI exits but the tmux session survives (e.g. terminal disconnect):
 
 ```bash
-python3 -m claodex attach             # from the same directory
-python3 -m claodex attach ~/myproject  # or specify the path
+claodex attach             # from the same directory
+claodex attach ~/myproject  # or specify the path
 ```
 
 If an agent session expires or you `/resume` inside an agent pane, claodex
@@ -126,7 +129,7 @@ commands. The essentials:
 | Switch pane | `Ctrl+b` then arrow key |
 | Scroll up | `Ctrl+b` then `[`, arrows/PgUp, `q` to exit |
 | Detach (session keeps running) | `Ctrl+b` then `d` |
-| Reattach | `python3 -m claodex attach` |
+| Reattach | `claodex attach` |
 
 ## Configuration
 

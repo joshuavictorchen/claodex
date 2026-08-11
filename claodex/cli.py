@@ -1693,9 +1693,9 @@ class ClaodexApplication:
     def _print_help() -> None:
         """Print command usage."""
         print("usage:")
-        print("  python3 -m claodex [directory]")
-        print("  python3 -m claodex attach [directory]")
-        print("  python3 -m claodex sidebar [directory]")
+        print("  claodex [directory]")
+        print("  claodex attach [directory]")
+        print("  claodex sidebar [directory]")
 
 
 def parse_collab_request(command_text: str, default_start: str) -> CollabRequest:
