@@ -384,6 +384,22 @@ def test_ensure_sidebar_running_skips_restart_when_python_running(tmp_path):
     start_sidebar_mock.assert_not_called()
 
 
+def test_ensure_sidebar_running_skips_restart_for_macos_capitalized_python(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    layout = PaneLayout(codex="%0", claude="%2", input="%1", sidebar="%3")
+
+    application = ClaodexApplication()
+    with (
+        patch("claodex.cli.is_pane_alive", return_value=True),
+        patch("claodex.cli.pane_current_command", return_value="Python"),
+        patch("claodex.cli.start_sidebar_process") as start_sidebar_mock,
+    ):
+        application._ensure_sidebar_running(layout, workspace)
+
+    start_sidebar_mock.assert_not_called()
+
+
 def test_ensure_sidebar_running_raises_for_dead_pane(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

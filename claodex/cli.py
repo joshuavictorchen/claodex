@@ -532,7 +532,8 @@ class ClaodexApplication:
             raise ClaodexError(f"sidebar pane is not alive: {layout.sidebar}")
 
         current = pane_current_command(layout.sidebar)
-        if current is not None and current.startswith("python"):
+        # macOS framework builds report the process as "Python", not "python3"
+        if current is not None and current.casefold().startswith("python"):
             return
 
         print("sidebar process not running; relaunching...")
