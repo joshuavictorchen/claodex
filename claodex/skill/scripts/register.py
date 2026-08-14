@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -49,7 +50,7 @@ def encode_claude_project_dir(workspace_root: str) -> str:
     Returns:
         Encoded project directory key.
     """
-    return workspace_root.replace("/", "-")
+    return re.sub(r"[^a-zA-Z0-9]", "-", workspace_root)
 
 
 def discover_claude_session(workspace_root: Path) -> Path | None:

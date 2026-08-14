@@ -57,7 +57,7 @@ def encode_claude_project_dir(workspace_root: str) -> str:
     Returns:
         Encoded directory string (e.g. ``/a/b`` -> ``-a-b``).
     """
-    return workspace_root.replace("/", "-")
+    return re.sub(r"[^a-zA-Z0-9]", "-", workspace_root)
 
 
 def discover_claude_session(workspace_root: Path) -> Path | None:
